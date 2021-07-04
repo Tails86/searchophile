@@ -1,4 +1,4 @@
 #! /bin/sh
 
-# Search all py extension files with given string and display results.
+# Search all py extension files with given string and display results with line number.
 search "$@" -n --name "*.py"
