@@ -61,40 +61,48 @@ def _parse_args(cliargs):
     Returns: A structure which contains all of the parsed arguments.
     '''
     parser = argparse.ArgumentParser(description='Recursively search for files within a directory')
-    parser.add_argument('search_string', type=str, help='Search for this string in files')
-    parser.add_argument('-r', '--regexSearch', dest='regex', action='store_true',
-                        help='Search as regex instead of string')
-    parser.add_argument('--root', dest='root_dir', type=str, default='.', 
-                        help='Root directory in which to search (default: .)')
-    parser.add_argument('-a', '--name', dest='names', type=str, action='extend', nargs='+', 
-                        default=[], help='File name globs used to narrow search')
-    parser.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
-                        action='extend', nargs='+', default=[],
-                        help='Relative file path globs used to narrow search')
-    parser.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
-                        action='extend', nargs='+', default=[],
-                        help='File name regex globs used to narrow search')
-    parser.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
-                        type=str, action='extend', nargs='+', default=[],
-                        help='Relative file path regex globs used to narrow search')
-    parser.add_argument('-i', '--ignoreCase', dest='ignore_case', action='store_true',
-                        help='Ignore case when searching')
-    parser.add_argument('-l', '--listFileNames', dest='list_file_names', action='store_true',
-                        help='List matching file names only for search operation')
-    parser.add_argument('-s', '--silent', dest='silent', action='store_true',
-                        help='Silence superfluous information and only give the result of the '
-                             'search or replace. If this is specified with replace operation, no '
-                             'output will displayed unless there was an error.')
-    parser.add_argument('-n', '--showLineNumber', dest='show_line', action='store_true',
-                        help='Show line number in result')
-    color_group = parser.add_mutually_exclusive_group()
+    grep_group = parser.add_argument_group('grep Options')
+    grep_group.add_argument('search_string', type=str, help='Search for this string in files')
+    grep_group.add_argument('-r', '--regexSearch', dest='regex', action='store_true',
+                            help='Search as regex instead of string')
+    grep_group.add_argument('-i', '--ignoreCase', dest='ignore_case', action='store_true',
+                            help='Ignore case when searching')
+    grep_group.add_argument('-l', '--listFileNames', dest='list_file_names', action='store_true',
+                            help='List matching file names only for search operation')
+    grep_group.add_argument('-n', '--showLineNumber', dest='show_line', action='store_true',
+                            help='Show line number in result')
+    color_group = grep_group.add_mutually_exclusive_group()
     color_group.add_argument('--showColor', dest='show_color', action='store_true',
                              help='Set to display color in search output (default: auto)')
     color_group.add_argument('--noColor', dest='no_color', action='store_true',
                              help='Set to not display color in search output (default: auto)')
-    parser.add_argument('--replace', dest='replace_string', type=str,
-                        help='String to replace search string. If --regex is selected, this must '
-                             'be as a sed replace string.')
+    find_group = parser.add_argument_group('find options')
+    find_group.add_argument('--root', dest='root_dir', type=str, default='.', 
+                            help='Root directory in which to search (default: .)')
+    find_group.add_argument('-a', '--name', dest='names', type=str, action='extend', nargs='+', 
+                            default=[], help='File name globs used to narrow search')
+    find_group.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
+                            action='extend', nargs='+', default=[],
+                            help='Relative file path globs used to narrow search')
+    find_group.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
+                            action='extend', nargs='+', default=[],
+                            help='File name regex globs used to narrow search')
+    find_group.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
+                            type=str, action='extend', nargs='+', default=[],
+                            help='Relative file path regex globs used to narrow search')
+    find_group.add_argument('-M', '--maxdepth', '--maxDepth', dest='max_depth', type=int, 
+                            default=None, help='Maximum find directory depth (default: inf)')
+    find_group.add_argument('-m', '--mindepth', '--minDepth', dest='min_depth', type=int, 
+                            default=0, help='Minimum find directory depth (default: 0)')
+    sed_group = parser.add_argument_group('sed options')
+    sed_group.add_argument('--replace', dest='replace_string', type=str,
+                           help='String to replace search string. If --regex is selected, this '
+                                'must be as a sed replace string.')
+    parser.add_argument('-s', '--silent', dest='silent', action='store_true',
+                        help='Silence information & confirmations generated by this script. If '
+                             'this is specified with replace operation, no output will displayed '
+                             'unless there was an error.')
+    
     return parser.parse_args(cliargs)
     
 def _build_find_command(args):
@@ -107,7 +115,7 @@ def _build_find_command(args):
     find_command = ['find', args.root_dir, '-type', 'f']
     name_options = []
     # The regex option searches the whole name, so add regex to match all directory names
-    file_name_regex = ['.*/' + item for item in args.regex_names]
+    file_name_regex = ['.*/' + item.lstrip('^') for item in args.regex_names]
     all_regex_names = args.regex_whole_names + file_name_regex
     names_dict = {'-name': args.names,
                   '-wholename': args.whole_names,
@@ -122,6 +130,10 @@ def _build_find_command(args):
     if all_regex_names:
         name_options += ['-regextype', 'sed']
     find_command += name_options
+    if args.max_depth is not None:
+        find_command += ['-maxdepth', str(args.max_depth)]
+    if args.min_depth > 0:
+        find_command += ['-mindepth', str(args.min_depth)]
     return find_command
     
 def _build_grep_command(args):
