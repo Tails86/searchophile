@@ -61,14 +61,18 @@ def _parse_args(cliargs):
     parser.add_argument('-i', '--ignoreCase', dest='ignore_case', action='store_true',
                         help='Ignore case when searching')
     parser.add_argument('-l', '--listFileNames', dest='list_file_names', action='store_true',
-                        help='List file names only')
+                        help='List matching file names only for search operation')
     parser.add_argument('-s', '--silent', dest='silent', action='store_true',
                         help='Silence superfluous information and only give the result of the '
-                             'search')
+                             'search or replace. If this is specified with replace operation, no '
+                             'output will displayed unless there was an error.')
     parser.add_argument('-n', '--showLineNumber', dest='show_line', action='store_true',
                         help='Show line number in result')
-    parser.add_argument('--color', dest='color', type=str, default='auto',
-                        help='Set to always, never, or auto (default: auto)')
+    color_group = parser.add_mutually_exclusive_group()
+    color_group.add_argument('--showColor', dest='show_color', action='store_true',
+                             help='Set to display color in search output (default: auto)')
+    color_group.add_argument('--noColor', dest='no_color', action='store_true',
+                             help='Set to not display color in search output (default: auto)')
     parser.add_argument('--replace', dest='replace_string', type=str,
                         help='String to replace search string. If --regex is selected, this must '
                              'be as a sed replace string.')
@@ -108,19 +112,24 @@ def _build_grep_command(args):
     Returns: The grep command list.
     '''
     # Build the grep command to search in the above files
-    grep_command = ['xargs', 'grep', '--color={}'.format(args.color)]
-    grep_options = '-H'
+    grep_command = ['xargs', 'grep']
+    grep_color_option = '--color=auto'
+    if args.show_color:
+        grep_color_option = '--color=always'
+    elif args.no_color:
+        grep_color_option = '--color=never'
+    grep_other_options = '-H'
     if args.ignore_case:
-        grep_options += 'i'
+        grep_other_options += 'i'
     if args.list_file_names:
-        grep_options += 'l'
+        grep_other_options += 'l'
     if args.show_line:
-        grep_options += 'n'
+        grep_other_options += 'n'
     if args.regex:
-        grep_options += 'E' # For grep "extended regex"
+        grep_other_options += 'E' # For grep "extended regex"
     else:
-        grep_options += 'F' # Default to string search
-    grep_command += [grep_options, args.search_string]
+        grep_other_options += 'F' # Default to string search
+    grep_command += [grep_color_option, grep_other_options, args.search_string]
     return grep_command
     
 def _escape_chars(string, escape_chars_string, escape_char):
