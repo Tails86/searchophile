@@ -15,7 +15,7 @@ line number.
 > search.py coordinates[2] --regexwholename '^.*\.\(h\|hpp\|c\|cpp\)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
-> search.py '^this.*is [a-z] regex string [0-9]+$' --regex --silent
+> search.py '^this.*is [a-z] regex string [0-9]+$' --regexSearch --silent
 This will search all files under the pwd for the regex string 
 "^this.*is [a-z] regex string [0-9]+$" and print results to stdout without printing equivalent
 find/grep command.
@@ -45,18 +45,20 @@ def _parse_args(cliargs):
     '''
     parser = argparse.ArgumentParser(description='Recursively search for files within a directory')
     parser.add_argument('search_string', type=str, help='Search for this string in files')
-    parser.add_argument('--regex', action='store_true', help='Search as regex instead of string')
+    parser.add_argument('-r', '--regexSearch', dest='regex', action='store_true',
+                        help='Search as regex instead of string')
     parser.add_argument('--root', dest='root_dir', type=str, default='.', 
                         help='Root directory in which to search (default: .)')
     parser.add_argument('-a', '--name', dest='names', type=str, action='extend', nargs='+', 
                         default=[], help='File name globs used to narrow search')
-    parser.add_argument('-w', '--wholename', dest='whole_names', type=str, action='extend',
-                        nargs='+', default=[],
-                        help='Relative file path globs used to narrow search')
-    parser.add_argument('-x', '--regexname', dest='regex_names', type=str, action='extend',
-                        nargs='+', default=[], help='File name regex globs used to narrow search')
-    parser.add_argument('-r', '--regexwholename', dest='regex_whole_names', type=str,
+    parser.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
                         action='extend', nargs='+', default=[],
+                        help='Relative file path globs used to narrow search')
+    parser.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
+                        action='extend', nargs='+', default=[],
+                        help='File name regex globs used to narrow search')
+    parser.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
+                        type=str, action='extend', nargs='+', default=[],
                         help='Relative file path regex globs used to narrow search')
     parser.add_argument('-i', '--ignoreCase', dest='ignore_case', action='store_true',
                         help='Ignore case when searching')
