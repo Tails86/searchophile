@@ -60,6 +60,11 @@ def _parse_args(cliargs):
     Inputs: cliargs - The arguments provided to the command line.
     Returns: A structure which contains all of the parsed arguments.
     '''
+    extend_action = 'extend'
+    version_dec = sys.version_info.major + (sys.version_info.minor / 10.0)
+    if version_dec < 3.8:
+        # The extend action is not compatible here
+        extend_action = None
     parser = argparse.ArgumentParser(description='Recursively search for files within a directory')
     grep_group = parser.add_argument_group('grep Options')
     grep_group.add_argument('search_string', type=str, help='Search for this string in files')
@@ -79,16 +84,16 @@ def _parse_args(cliargs):
     find_group = parser.add_argument_group('find options')
     find_group.add_argument('--root', dest='root_dir', type=str, default='.', 
                             help='Root directory in which to search (default: .)')
-    find_group.add_argument('-a', '--name', dest='names', type=str, action='extend', nargs='+', 
+    find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+', 
                             default=[], help='File name globs used to narrow search')
     find_group.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
-                            action='extend', nargs='+', default=[],
+                            action=extend_action, nargs='+', default=[],
                             help='Relative file path globs used to narrow search')
     find_group.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
-                            action='extend', nargs='+', default=[],
+                            action=extend_action, nargs='+', default=[],
                             help='File name regex globs used to narrow search')
     find_group.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
-                            type=str, action='extend', nargs='+', default=[],
+                            type=str, action=extend_action, nargs='+', default=[],
                             help='Relative file path regex globs used to narrow search')
     find_group.add_argument('-M', '--maxdepth', '--maxDepth', dest='max_depth', type=int, 
                             default=None, help='Maximum find directory depth (default: inf)')
