@@ -43,16 +43,43 @@ import argparse
 import subprocess
 import string
 
+def _item_needs_quotes(item):
+    '''
+    Returns true iff the given item needs to be surrounded in quotes.
+    '''
+    return any([c in item for c in string.whitespace + '~`#$&*()|[]{};<>/?!\\"']) or len(item) <= 0
+
+def _quotify_item(item):
+    '''
+    Quotifies a single item.
+    '''
+    # Once it's quoted, the only character to escape is a quote character. This is done by adding
+    # and end quote, escaping the quote, and then starting a new quoted string.
+    item_copy = '\'{}\''.format(_escape_chars(item, '\'', '\\', '\'\\{}\''))
+    # A side effect of the above is that the string may contain superfluous empty strings at the 
+    # beginning or end, but we don't want to do this if the string was empty to begin with.
+    if item_copy != '\'\'':
+        if item_copy.startswith('\'\''):
+            item_copy = item_copy[2:]
+        if item_copy.endswith('\'\''):
+            item_copy = item_copy[:-2]
+    return item_copy
+
+def _quotify_command(command):
+    '''
+    Surrounds the items in the given command with quotes iff it contains special characters and
+    escapes strong quote characters when necessary.
+    '''
+    return [_escape_chars(item, '\'', '\\') if not _item_needs_quotes(item)
+            else _quotify_item(item)
+            for item in command]
+
 def _print_command(command):
     '''
-    Prints the given command to stdout, surrounding whatever arguments with quotes that require
-    them.
+    Prints the given command to stdout.
     Inputs: command - The command list to print.
     '''
-    command_copy = [item if not any([c in item for c in string.whitespace + '?*'])
-                    else '"{}"'.format(item)
-                    for item in command]
-    print(' '.join(command_copy))
+    print(' '.join(command))
 
 def _parse_args(cliargs):
     '''
@@ -143,19 +170,21 @@ def _build_find_command(args):
         find_command += ['-mindepth', str(args.min_depth)]
     return find_command
 
-def _escape_chars(string, escape_chars_string, escape_char):
+def _escape_chars(string, escape_chars_string, escape_char, escape_format=None):
     '''
     Returns: A copy of string with all of the characters in escape_chars_string escaped with
              escape_char.
     '''
     string_copy = string
+    if escape_format is None:
+        escape_format = escape_char + '{}'
     # Escape the escape_char first
     if escape_char in escape_chars_string:
-        string_copy = string_copy.replace(escape_char, escape_char + escape_char)
+        string_copy = string_copy.replace(escape_char, escape_format.format(escape_char))
     # Escape the rest of the characters
     for char in escape_chars_string:
         if char != escape_char:
-            string_copy = string_copy.replace(char, escape_char + char)
+            string_copy = string_copy.replace(char, escape_format.format(char))
     return string_copy
 
 def _build_grep_command(args):
@@ -224,7 +253,7 @@ def main(cliargs):
     grep_command = _build_grep_command(args)
     # If not silent, print the CLI equivalent of what is about to be done
     if not args.silent:
-        _print_command(find_command + ['|'] + grep_command)
+        _print_command(_quotify_command(find_command) + ['|'] + _quotify_command(grep_command))
     # Execute find to get all files
     find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     find_output, _ = find_process.communicate()
@@ -247,7 +276,7 @@ def main(cliargs):
                 print('Invalid entry: {}'.format(input_str))
                 return 2
             # Continue otherwise
-            _print_command(find_command + ['|'] + replace_command)
+            _print_command(_quotify_command(find_command) + ['|'] + _quotify_command(replace_command))
         # Execute the sed command to do the replace
         replace_process = subprocess.Popen(replace_command, stdin=subprocess.PIPE)
         replace_process.communicate(input=find_output)
