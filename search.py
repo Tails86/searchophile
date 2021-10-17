@@ -10,24 +10,24 @@ Examples:
 This will search all files under the pwd for the string "the quick brown fox" and display
 equivalent find/grep command with results to stdout.
 Output:
-find . -type f | xargs grep --color=auto -HF "the quick brown fox"
+find . -type f | xargs grep --color=auto -HF 'the quick brown fox'
 (grep search results shown here)
 
 > search.py 'hi mom' --name '*.py' -in
 This will search all python files under the pwd for the string "hi mom", ignoring case and display
 line number.
 Output:
-find . -type f -name "*.py" | xargs grep --color=auto -HinF "hi mom"
+find . -type f -name '*.py' | xargs grep --color=auto -HinF 'hi mom'
 (grep search results shown here)
 
 > search.py coordinates[2] --regexwholename '^.*\.\(h\|hpp\|c\|cpp\)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
 Output:
-find . -type f -regex "^.*\.\(h\|hpp\|c\|cpp\)$" -regextype sed | xargs grep --color=auto -HF coordinates[2]
+find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs grep --color=auto -HF 'coordinates[2]'
 (grep search results shown here)
 Would you like to continue? (y/n): y
-find . -type f -regex "^.*\.\(h\|hpp\|c\|cpp\)$" -regextype sed | xargs sed -i s=coordinates\[2\]=coordinate_z=g
+find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs sed -i 's=coordinates\[2\]=coordinate_z=g'
 (sed result shown here)
 
 > search.py '^this.*is [a-z] regex string [0-9]+$' --regexSearch --silent
