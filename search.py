@@ -249,6 +249,43 @@ def _build_replace_command(args):
                                       'i' if args.ignore_case else '')
     return ['xargs', 'sed', '-i', sed_script]
 
+def _grep_output_tweaks(line, args, file_list):
+    '''
+    Adds a space after the colon before the result so that ctrl+click always works in vscode.
+    Inputs: line - The grep output line to apply tweaks to.
+            args - The parser argument structure.
+            file_list - List of files found by the find command.
+    Returns: The augmented grep line.
+    '''
+    colon_pos = None
+    start_pos = 0
+    if line.startswith('\x1b'):
+        # When color is enabled, the first \x1b[m marks the end of the file name - that's where we  
+        # should start searching for colons
+        start_pos = line.find('\x1b[m')
+        if start_pos < 0:
+            # Failed to find the color marker
+            start_pos = 0
+        colon_pos = line.find(':', start_pos)
+    else:
+        colon_pos = line.find(':')
+        # Keep going until all characters up to the found colon is a valid file name.
+        # Not a perfect solution, but this is the best I can do to capture file names which have 
+        # colons in the name.
+        while colon_pos >= 0 and line[:colon_pos] not in file_list:
+            colon_pos = line.find(':', colon_pos+1)
+    
+    # If line number is shown, then we want the second colon
+    if args.show_line and colon_pos >= 0:
+        colon_pos = line.find(':', colon_pos+1)
+
+    # Finally, add the space were it's needed
+    if colon_pos >= 0:
+        line = line[:colon_pos+1] + ' ' + line[colon_pos+1:]
+
+    return line
+        
+
 def main(cliargs):
     '''
     Main function for this module.
@@ -267,6 +304,7 @@ def main(cliargs):
         # Execute find to get all files
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         find_output, _ = find_process.communicate()
+        file_list = find_output.decode().split('\n')
         if not args.replace_string or not args.silent:
             # Execute grep on those files and print result to stdout in realtime (ignore stderr)
             grep_process = subprocess.Popen(grep_command,
@@ -275,16 +313,10 @@ def main(cliargs):
                                             stderr=subprocess.PIPE) # purposely ignoring
             grep_process.stdin.write(find_output)
             grep_process.stdin.close()
-            # Print a space after the colon, before the result so that ctrl+click always works in
-            # vscode. This will unfortunately not work for files with colon(s) in the name.
             for line in grep_process.stdout:
                 line = line.decode()
                 if not args.no_grep_tweaks:
-                    colon_pos = line.find(':')
-                    if args.show_line and colon_pos >= 0:
-                        colon_pos = line.find(':', colon_pos+1)
-                    if colon_pos >= 0:
-                        line = line[:colon_pos+1] + ' ' + line[colon_pos+1:]
+                    line = _grep_output_tweaks(line, args, file_list)
                 print(line, end='')
     if args.replace_string:
         replace_command = _build_replace_command(args)
