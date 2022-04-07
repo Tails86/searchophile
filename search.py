@@ -10,21 +10,21 @@ Examples:
 This will search all files under the pwd for the string "the quick brown fox" and display
 equivalent find/grep command with results to stdout.
 Output:
-find . -type f | xargs grep --color=auto -HF 'the quick brown fox'
+find . -type f | xargs grep --color=always -HF 'the quick brown fox'
 (grep search results shown here)
 
 > search.py 'hi mom' --name '*.py' -in
 This will search all python files under the pwd for the string "hi mom", ignoring case and display
 line number.
 Output:
-find . -type f -name '*.py' | xargs grep --color=auto -HinF 'hi mom'
+find . -type f -name '*.py' | xargs grep --color=always -HinF 'hi mom'
 (grep search results shown here)
 
 > search.py coordinates[2] --regexwholename '^.*\.\(h\|hpp\|c\|cpp\)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
 Output:
-find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs grep --color=auto -HF 'coordinates[2]'
+find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs grep --color=always -HF 'coordinates[2]'
 (grep search results shown here)
 Would you like to continue? (y/n): y
 find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs sed -i 's=coordinates\[2\]=coordinate_z=g'
@@ -106,6 +106,8 @@ def _parse_args(cliargs):
                             help='Show line number in result')
     grep_group.add_argument('--wholeWord', '--wholeword', dest='whole_word', action='store_true',
                             help='Search with whole word only')
+    grep_group.add_argument('--noGrepTweaks', dest='no_grep_tweaks', action='store_true',
+                            help='Don\'t make any tweaks to the output of grep')
     color_group = grep_group.add_mutually_exclusive_group()
     color_group.add_argument('--showColor', dest='show_color', action='store_true',
                              help='Set to display color in search output (default: auto)')
@@ -199,10 +201,13 @@ def _build_grep_command(args):
     '''
     # Build the grep command to search in the above files
     grep_command = ['xargs', 'grep']
-    grep_color_option = '--color=auto'
     if args.show_color:
         grep_color_option = '--color=always'
     elif args.no_color:
+        grep_color_option = '--color=never'
+    elif sys.stdout.isatty():
+        grep_color_option = '--color=always'
+    else:
         grep_color_option = '--color=never'
     grep_other_options = '-H'
     if args.ignore_case:
@@ -266,8 +271,21 @@ def main(cliargs):
             # Execute grep on those files and print result to stdout in realtime (ignore stderr)
             grep_process = subprocess.Popen(grep_command,
                                             stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE) # purposely ignoring
-            grep_process.communicate(input=find_output)
+            grep_process.stdin.write(find_output)
+            grep_process.stdin.close()
+            # Print a space after the colon, before the result so that ctrl+click always works in
+            # vscode. This will unfortunately not work for files with colon(s) in the name.
+            for line in grep_process.stdout:
+                line = line.decode()
+                if not args.no_grep_tweaks:
+                    colon_pos = line.find(':')
+                    if args.show_line and colon_pos >= 0:
+                        colon_pos = line.find(':', colon_pos+1)
+                    if colon_pos >= 0:
+                        line = line[:colon_pos+1] + ' ' + line[colon_pos+1:]
+                print(line, end='')
     if args.replace_string:
         replace_command = _build_replace_command(args)
         # If not silent, check if user wants to continue then print the CLI equivalent of what is
