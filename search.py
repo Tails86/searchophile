@@ -54,10 +54,11 @@ def _quotify_item(item):
     Quotifies a single item.
     '''
     # Once it's quoted, the only character to escape is a quote character. This is done by adding
-    # and end quote, escaping the quote, and then starting a new quoted string.
+    # an end quote, escaping the quote, and then starting a new quoted string.
     item_copy = '\'{}\''.format(_escape_chars(item, '\'', '\\', '\'\\{}\''))
     # A side effect of the above is that the string may contain superfluous empty strings at the 
     # beginning or end, but we don't want to do this if the string was empty to begin with.
+    # Note: I don't want to use shlex for this reason (it doesn't clean up its empty strings)
     if item_copy != '\'\'':
         if item_copy.startswith('\'\''):
             item_copy = item_copy[2:]
@@ -217,7 +218,7 @@ def _build_grep_command(args):
             # Force regex search and escape regex search special characters
             regex = True
             search_string = _escape_chars(search_string, '\\^$.*?[]', '\\')
-        NON_ALPHA_NUMERIC = '[^a-zA-Z\d]'
+        NON_ALPHA_NUMERIC = '[^a-zA-Z0-9\d]'
         search_string = '(^|{0}){1}($|{0})'.format(NON_ALPHA_NUMERIC, search_string)
     if regex:
         grep_other_options += 'E' # For grep "extended regex"
@@ -265,7 +266,7 @@ def main(cliargs):
             # Execute grep on those files and print result to stdout in realtime (ignore stderr)
             grep_process = subprocess.Popen(grep_command,
                                             stdin=subprocess.PIPE,
-                                            stderr=subprocess.PIPE)
+                                            stderr=subprocess.PIPE) # purposely ignoring
             grep_process.communicate(input=find_output)
     if args.replace_string:
         replace_command = _build_replace_command(args)
