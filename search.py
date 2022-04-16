@@ -42,6 +42,7 @@ import sys
 import argparse
 import subprocess
 import string
+import threading
 
 def _item_needs_quotes(item):
     '''
@@ -285,6 +286,10 @@ def _grep_output_tweaks(line, args, file_list):
 
     return line
         
+def grep_print_thread_fn(proc, args, file_list):
+    for line in iter(proc.stdout.readline, b''):
+        print(_grep_output_tweaks(line.decode(), args, file_list), end='')
+
 
 def main(cliargs):
     '''
@@ -306,18 +311,26 @@ def main(cliargs):
         find_output, _ = find_process.communicate()
         file_list = find_output.decode().split('\n')
         if not args.replace_string or not args.silent:
-            # Execute grep on those files and print result to stdout in realtime (ignore stderr)
-            grep_process = subprocess.Popen(grep_command,
-                                            stdin=subprocess.PIPE,
-                                            stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE) # purposely ignoring
+            # Execute grep on those files and print result to stdout in realtime
+            grep_process = subprocess.Popen(
+                grep_command,
+                stdin=subprocess.PIPE,
+                stdout=(subprocess.PIPE if not args.no_grep_tweaks else None),
+                stderr=subprocess.PIPE) # purposely ignoring
+            
+            if not args.no_grep_tweaks:
+                # A separate thread is needed because stdin.write() blocks
+                print_thread = threading.Thread(target=grep_print_thread_fn, 
+                                                args=(grep_process, args, file_list))
+                print_thread.start()
+
+            # This will block until grep completes search on each entered file
             grep_process.stdin.write(find_output)
             grep_process.stdin.close()
-            for line in grep_process.stdout:
-                line = line.decode()
-                if not args.no_grep_tweaks:
-                    line = _grep_output_tweaks(line, args, file_list)
-                print(line, end='')
+
+            # Wait until complete for good measure
+            grep_process.wait()
+
     if args.replace_string:
         replace_command = _build_replace_command(args)
         # If not silent, check if user wants to continue then print the CLI equivalent of what is
