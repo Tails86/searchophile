@@ -258,6 +258,7 @@ def _grep_output_tweaks(line, args, file_list):
             file_list - List of files found by the find command.
     Returns: The augmented grep line.
     '''
+    line = line.decode()
     colon_pos = None
     start_pos = 0
     if line.startswith('\x1b'):
@@ -284,11 +285,11 @@ def _grep_output_tweaks(line, args, file_list):
     if colon_pos >= 0:
         line = line[:colon_pos] + ' : ' + line[colon_pos+1:]
 
-    return line
+    return line.encode()
         
-def grep_print_thread_fn(proc, args, file_list):
-    for line in iter(proc.stdout.readline, b''):
-        print(_grep_output_tweaks(line.decode(), args, file_list), end='')
+def grep_print_thread_fn(proc, tweaker_fn):
+    for line in proc.stdout:
+        sys.stdout.buffer.write(tweaker_fn(line))
 
 
 def main(cliargs):
@@ -318,10 +319,12 @@ def main(cliargs):
                 stdout=(subprocess.PIPE if not args.no_grep_tweaks else None),
                 stderr=subprocess.PIPE) # purposely ignoring
             
+            print_thread = None
             if not args.no_grep_tweaks:
                 # A separate thread is needed because stdin.write() blocks
-                print_thread = threading.Thread(target=grep_print_thread_fn, 
-                                                args=(grep_process, args, file_list))
+                print_thread = threading.Thread(
+                    target=grep_print_thread_fn, 
+                    args=(grep_process, lambda line: _grep_output_tweaks(line, args, file_list)))
                 print_thread.start()
 
             # This will block until grep completes search on each entered file
@@ -330,6 +333,8 @@ def main(cliargs):
 
             # Wait until complete for good measure
             grep_process.wait()
+            if print_thread:
+                print_thread.join()
 
     if args.replace_string:
         replace_command = _build_replace_command(args)
