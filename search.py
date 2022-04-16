@@ -282,7 +282,7 @@ def _grep_output_tweaks(line, args, file_list):
 
     # Finally, add the space were it's needed
     if colon_pos >= 0:
-        line = line[:colon_pos+1] + ' ' + line[colon_pos+1:]
+        line = line[:colon_pos] + ' : ' + line[colon_pos+1:]
 
     return line
         
