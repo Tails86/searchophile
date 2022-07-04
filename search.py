@@ -57,7 +57,7 @@ def _quotify_item(item):
     # Once it's quoted, the only character to escape is a quote character. This is done by adding
     # an end quote, escaping the quote, and then starting a new quoted string.
     item_copy = '\'{}\''.format(_escape_chars(item, '\'', '\\', '\'\\{}\''))
-    # A side effect of the above is that the string may contain superfluous empty strings at the 
+    # A side effect of the above is that the string may contain superfluous empty strings at the
     # beginning or end, but we don't want to do this if the string was empty to begin with.
     # Note: I don't want to use shlex for this reason (it doesn't clean up its empty strings)
     if item_copy != '\'\'':
@@ -117,7 +117,7 @@ def _parse_args(cliargs):
     find_group = parser.add_argument_group('find options')
     find_group.add_argument('--root', dest='root_dir', type=str, default='.',
                             help='Root directory in which to search (default: .)')
-    find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+', 
+    find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+',
                             default=[], help='File name globs used to narrow search')
     find_group.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
                             action=extend_action, nargs='+', default=[],
@@ -194,10 +194,11 @@ def _escape_chars(string, escape_chars_string, escape_char, escape_format=None):
             string_copy = string_copy.replace(char, escape_format.format(char))
     return string_copy
 
-def _build_grep_command(args):
+def _build_grep_command(args, for_printout):
     '''
     Builds the grep command with the given arguments.
     Inputs: args - The parser argument structure.
+            for_printout - True iff this command is given as reference printout
     Returns: The grep command list.
     '''
     # Build the grep command to search in the above files
@@ -206,6 +207,12 @@ def _build_grep_command(args):
         grep_color_option = '--color=always'
     elif args.no_color:
         grep_color_option = '--color=never'
+    # Really, auto option is needed, but grep is piped internally, so grep will not provide color if
+    # auto is selected. Therefore, auto is used if this command is built for reference printout.
+    # Otherwise, color is determined based on if this command is outputting directly to the
+    # terminal.
+    elif for_printout:
+        grep_color_option = '--color=auto'
     elif sys.stdout.isatty():
         grep_color_option = '--color=always'
     else:
@@ -262,7 +269,7 @@ def _grep_output_tweaks(line, args, file_list):
     colon_pos = None
     start_pos = 0
     if line.startswith('\x1b'):
-        # When color is enabled, the first \x1b[m marks the end of the file name - that's where we  
+        # When color is enabled, the first \x1b[m marks the end of the file name - that's where we
         # should start searching for colons
         start_pos = line.find('\x1b[m')
         if start_pos < 0:
@@ -272,11 +279,11 @@ def _grep_output_tweaks(line, args, file_list):
     else:
         colon_pos = line.find(':')
         # Keep going until all characters up to the found colon is a valid file name.
-        # Not a perfect solution, but this is the best I can do to capture file names which have 
+        # Not a perfect solution, but this is the best I can do to capture file names which have
         # colons in the name.
         while colon_pos >= 0 and line[:colon_pos] not in file_list:
             colon_pos = line.find(':', colon_pos+1)
-    
+
     # If line number is shown, then we want the second colon
     if args.show_line and colon_pos >= 0:
         colon_pos = line.find(':', colon_pos+1)
@@ -286,7 +293,7 @@ def _grep_output_tweaks(line, args, file_list):
         line = line[:colon_pos] + ' : ' + line[colon_pos+1:]
 
     return line.encode()
-        
+
 def grep_print_thread_fn(proc, tweaker_fn):
     for line in proc.stdout:
         sys.stdout.buffer.write(tweaker_fn(line))
@@ -302,10 +309,10 @@ def main(cliargs):
     '''
     args = _parse_args(cliargs)
     find_command = _build_find_command(args)
-    grep_command = _build_grep_command(args)
+    grep_command = _build_grep_command(args, False)
     # If not silent, print the CLI equivalent of what is about to be done
     if not args.silent:
-        _print_command(_quotify_command(find_command) + ['|'] + _quotify_command(grep_command))
+        _print_command(_quotify_command(find_command) + ['|'] + _quotify_command(_build_grep_command(args, True)))
     if not args.dry_run:
         # Execute find to get all files
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -318,12 +325,12 @@ def main(cliargs):
                 stdin=subprocess.PIPE,
                 stdout=(subprocess.PIPE if not args.no_grep_tweaks else None),
                 stderr=subprocess.PIPE) # purposely ignoring
-            
+
             print_thread = None
             if not args.no_grep_tweaks:
                 # A separate thread is needed because stdin.write() blocks
                 print_thread = threading.Thread(
-                    target=grep_print_thread_fn, 
+                    target=grep_print_thread_fn,
                     args=(grep_process, lambda line: _grep_output_tweaks(line, args, file_list)))
                 print_thread.start()
 
