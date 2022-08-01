@@ -38,6 +38,7 @@ Output:
 (grep search results shown here)
 '''
 
+import os
 import sys
 import argparse
 import subprocess
@@ -115,8 +116,8 @@ def _parse_args(cliargs):
     color_group.add_argument('--noColor', dest='no_color', action='store_true',
                              help='Set to not display color in search output (default: auto)')
     find_group = parser.add_argument_group('find options')
-    find_group.add_argument('--root', dest='root_dir', type=str, default='.',
-                            help='Root directory in which to search (default: .)')
+    find_group.add_argument('--root', dest='root_dir', type=str, default=None,
+                            help='Root directory in which to search (default: cwd)')
     find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+',
                             default=[], help='File name globs used to narrow search')
     find_group.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
@@ -152,8 +153,11 @@ def _build_find_command(args):
     Inputs: args - The parser argument structure.
     Returns: The find command list.
     '''
+    find_dir = args.root_dir
+    if find_dir is None:
+        find_dir = os.path.abspath('.')
     # Build the find command to filter only the files we want
-    find_command = ['find', args.root_dir, '-type', 'f']
+    find_command = ['find', find_dir, '-type', 'f']
     name_options = []
     # The regex option searches the whole name, so add regex to match all directory names
     file_name_regex = ['.*/' + item.lstrip('^') for item in args.regex_names]
