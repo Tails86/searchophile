@@ -321,7 +321,6 @@ def main(cliargs):
         # Execute find to get all files
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         find_output, _ = find_process.communicate()
-        file_list = find_output.decode().split('\n')
         if not args.replace_string or not args.silent:
             # Execute grep on those files and print result to stdout in realtime
             grep_process = subprocess.Popen(
@@ -332,6 +331,7 @@ def main(cliargs):
 
             print_thread = None
             if not args.no_grep_tweaks:
+                file_list = find_output.decode().split('\n')
                 # A separate thread is needed because stdin.write() blocks
                 print_thread = threading.Thread(
                     target=grep_print_thread_fn,
