@@ -101,8 +101,7 @@ def _parse_args(cliargs):
     search_string_group.add_argument('search_string', default=None, nargs='?', type=str,
                                      help='Search for this string in files (as positional)')
     search_string_group.add_argument('-s', '--string', default=None, dest='search_string_opt',
-                                     type=str,
-                                     help='Search for this string in files (as option)')
+                                     type=str, help='Search for this string in files (as option)')
     grep_group.add_argument('-r', '--regexSearch', dest='regex', action='store_true',
                             help='Search as regex instead of string')
     grep_group.add_argument('-i', '--ignoreCase', dest='ignore_case', action='store_true',
@@ -234,7 +233,7 @@ def _build_grep_command(args, for_printout):
     if args.show_line:
         grep_other_options += 'n'
     regex = args.regex
-    search_string = args.search_string or args.string_opt
+    search_string = args.search_string or args.search_string_opt
     if args.whole_word:
         if not regex:
             # Force regex search and escape regex search special characters
@@ -255,7 +254,7 @@ def _build_replace_command(args):
     Inputs: args - The parser argument structure.
     Returns: The replace command list.
     '''
-    search_string = args.search_string or args.string_opt
+    search_string = args.search_string or args.search_string_opt
     replace_string = args.replace_string
     if not args.regex:
         # Escape all special characters
