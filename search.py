@@ -177,7 +177,7 @@ def _build_find_command(args):
             name_options += [name_arg, name]
     # If any regex name is set, set regextype to sed
     if all_regex_names:
-        name_options += ['-regextype', 'sed']
+        find_command += ['-regextype', 'sed']
     find_command += name_options
     if args.max_depth is not None:
         find_command += ['-maxdepth', str(args.max_depth)]
