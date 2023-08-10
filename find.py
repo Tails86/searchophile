@@ -369,10 +369,10 @@ normal options
     -regextype type  Set the regex type to
 
 tests
-    -name PATTERN  Tests against the name of the file using fnmatch
-    -regex PATTERN  Tests against the relative path to the file using re
-    -type [dfl]  Tests against file type directory, file, or link
-    -wholename PATTERN  Tests against the relative path to the file using fnmatch''')
+    -name PATTERN  Tests against the name of item using fnmatch
+    -regex PATTERN  Tests against the relative path to the item using re
+    -type [dfl]  Tests against item type directory, file, or link
+    -wholename PATTERN  Tests against the relative path to the item using fnmatch''')
 
 # TODO: handle parenthesis around expressions
 
