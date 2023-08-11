@@ -21,25 +21,6 @@ class RegexType(Enum):
     SED = 1
     EGREP = 2
 
-class Action:
-    def handle(self, path):
-        pass
-
-class PrintAction(Action):
-    def handle(self, path):
-        print(path)
-
-class ExecuteAction(Action):
-    def __init__(self, command):
-        super().__init__()
-        self._command = command
-
-    def handle(self, path):
-        command = list(self._command)
-        for i in range(len(command)):
-            command[i] = command[i].replace('{}', path)
-        subprocess.run(command)
-
 class PathParser:
     def __init__(self, find_root, path_split=None):
         '''
@@ -66,8 +47,8 @@ class PathParser:
                     self._rel_dir = self._rel_dir[1:]
             self._full_path = os.path.join(self._root, self._name)
         else:
-            self._root = None
-            self._rel_dir = None
+            self._root = ''
+            self._rel_dir = ''
             self._name = find_root
             self._full_path = find_root
 
@@ -108,6 +89,72 @@ class PathParser:
             return 1
         depth = len(self._rel_dir.split(os.sep)) + 1
         return depth
+
+class Action:
+    def handle(self, path_parser):
+        pass
+
+class PrintAction(Action):
+    def __init__(self, end=None):
+        super().__init__()
+        self._end = end
+
+    def handle(self, path_parser):
+        if self._end is not None:
+            print(path_parser.full_path, end=self._end)
+        else:
+            print(path_parser.full_path)
+
+class PyPrintAction(Action):
+    def __init__(self, format, end=None):
+        super().__init__()
+        self._format = format
+        self._end = end
+
+    def handle(self, path_parser):
+        d = {
+            "full_path": path_parser.full_path,
+            "root": path_parser.root,
+            "rel_dir": path_parser.rel_dir,
+            "name": path_parser.name,
+            "find_root": path_parser.find_root
+        }
+        s = os.stat(path_parser.full_path)
+        d.update({k: getattr(s, k) for k in dir(s) if k.startswith('st_')})
+        print_out = self._format.format(**d)
+        if self._end is not None:
+            print(print_out, end=self._end)
+        else:
+            print(print_out)
+
+class ExecuteAction(Action):
+    def __init__(self, command):
+        super().__init__()
+        self._command = command
+
+    def handle(self, path_parser):
+        command = list(self._command)
+        for i in range(len(command)):
+            command[i] = command[i].replace('{}', path_parser.full_path)
+        subprocess.run(command)
+
+class DeleteAction(Action):
+    def __init__(self):
+        super().__init__()
+
+    def handle(self, path_parser):
+        # Handle all except "."
+        if path_parser.full_path != '.':
+            if os.path.isdir(path_parser.full_path):
+                try:
+                    os.rmdir(path_parser.full_path)
+                except OSError as err:
+                    print(str(err))
+            else:
+                try:
+                    os.remove(path_parser.full_path)
+                except OSError as err:
+                    print(str(err))
 
 class Matcher:
     def __init__(self):
@@ -270,7 +317,7 @@ class Finder:
     def _handle_path(self, path_parser, actions):
         if self._matcher.is_match(path_parser):
             for action in actions:
-                action.handle(path_parser.full_path)
+                action.handle(path_parser)
 
     def _is_depth_ok(self, depth):
         return (
@@ -306,6 +353,7 @@ class Finder:
                             self._handle_path(PathParser(root_dir, (root, entity)), actions)
 
 class Options(Enum):
+    DOUBLEDASH = -1
     HELP = 0
     NOT = 1
     AND = 2
@@ -319,165 +367,197 @@ class Options(Enum):
     REGEX = 10
     EXEC = 11
     PRINT = 12
+    PRINT0 = 13
+    PYPRINT = 14
+    PYPRINT0 = 15
+    DELETE = 16
 
-def _to_option(s):
-    if s == '-h' or s == '-help' or s == '--help':
-        return Options.HELP
-    elif s == '!' or s == '-not':
-        return Options.NOT
-    elif s == '-a' or s == '-and':
-        return Options.AND
-    elif s == '-o' or s == '-or':
-        return Options.OR
-    elif s == '-type':
-        return Options.TYPE
-    elif s == '-maxdepth':
-        return Options.MAX_DEPTH
-    elif s == '-mindepth':
-        return Options.MIN_DEPTH
-    elif s == '-regextype':
-        return Options.REGEX_TYPE
-    elif s == '-name':
-        return Options.NAME
-    elif s == '-wholename':
-        return Options.WHOLE_NAME
-    elif s == '-regex':
-        return Options.REGEX
-    elif s == '-exec':
-        return Options.EXEC
-    elif s == '-print':
-        return Options.PRINT
-    return None
+class FinderParser:
+    OPTION_DICT = {
+        '--': Options.DOUBLEDASH,
+        '-h': Options.HELP,
+        '-help': Options.HELP,
+        '--help': Options.HELP,
+        '!': Options.NOT,
+        '-not': Options.NOT,
+        '-a': Options.AND,
+        '-and': Options.AND,
+        '-o': Options.OR,
+        '-or': Options.OR,
+        '-type': Options.TYPE,
+        '-maxdepth': Options.MAX_DEPTH,
+        '-mindepth': Options.MIN_DEPTH,
+        '-regextype': Options.REGEX_TYPE,
+        '-name': Options.NAME,
+        '-wholename': Options.WHOLE_NAME,
+        '-regex': Options.REGEX,
+        '-exec': Options.EXEC,
+        '-print': Options.PRINT,
+        '-print0': Options.PRINT0,
+        '-pyprint': Options.PYPRINT,
+        '-pyprint0': Options.PYPRINT0,
+        '-delete': Options.DELETE
+    }
 
-def _print_help():
-    print('''Partially implements find command in Python.
+    def __init__(self):
+        self._arg_idx = 0
+        self._opt_idx = 0
+        self._current_regex_type = RegexType.SED
+        self._current_command = []
 
-Usage: find.py [path...] [expression...]
+    @staticmethod
+    def _print_help():
+        print('''Partially implements find command in Python.
 
-default path is the current directory (.)
+    Usage: find.py [path...] [expression...]
 
-operators
-    ! EXPR
-    -not EXPR  Inverts the resulting value of the expression
-    EXPR EXPR
-    EXPR -a EXPR
-    EXPR -and EXPR  Logically AND the left and right expressions' result
-    EXPR -o EXPR
-    EXPR -or EXPR   Logically OR the left and right expressions' result
+    default path is the current directory (.)
 
-normal options
-    --help  Shows help and exit
-    -maxdepth LEVELS  Sets the maximum directory depth of find (default: inf)
-    -mindepth LEVELS  Sets the minimum directory depth of find (default: 0)
-    -regextype TYPE  Set the regex type to py, sed, egrep (default: sed)
+    operators
+        ! EXPR
+        -not EXPR  Inverts the resulting value of the expression
+        EXPR EXPR
+        EXPR -a EXPR
+        EXPR -and EXPR  Logically AND the left and right expressions' result
+        EXPR -o EXPR
+        EXPR -or EXPR   Logically OR the left and right expressions' result
 
-tests
-    -name PATTERN  Tests against the name of item using fnmatch
-    -regex PATTERN  Tests against the path to the item using re
-    -type [dfl]  Tests against item type directory, file, or link
-    -wholename PATTERN  Tests against the path to the item using fnmatch
+    normal options
+        -help  Shows help and exit
+        -maxdepth LEVELS  Sets the maximum directory depth of find (default: inf)
+        -mindepth LEVELS  Sets the minimum directory depth of find (default: 0)
+        -regextype TYPE  Set the regex type to py, sed, egrep (default: sed)
 
-actions
-    -print  Print the matching path
-    -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path''')
+    tests
+        -name PATTERN  Tests against the name of item using fnmatch
+        -regex PATTERN  Tests against the path to the item using re
+        -type [dfl]  Tests against item type directory, file, or link
+        -wholename PATTERN  Tests against the path to the item using fnmatch
 
-def main(cliargs):
-    # Not a good idea to use argparse because find parses arguments in order and uses single dash options
-    current_regex_type = RegexType.SED
-    arg_idx = 0
-    opt_idx = 0
-    finder = Finder()
-    current_option = None
-    current_command = []
-    for arg in cliargs:
-        opt = _to_option(arg)
-        if opt is None or current_option is not None:
-            # This is an argument to an option
-            reset_option = True
-            if current_option is None:
-                if arg.startswith('-') and not os.path.isdir(arg):
-                    raise ValueError('Unknown predicate: {}'.format(arg))
-                elif opt_idx != 0:
-                    raise ValueError('paths must precede expression: {}'.format(arg))
-                else:
-                    finder.add_root_dir(arg)
-            elif current_option == Options.TYPE:
-                types = []
-                for c in arg:
-                    if c == 'f':
-                        types.append(FindType.FILE)
-                    elif c == 'd':
-                        types.append(FindType.DIRECTORY)
-                    elif c == 'l':
-                        types.append(FindType.SYMBOLIC_LINK)
-                    # Don't require comma like find command, but also don't error out if they are included
-                    elif c != ',':
-                        raise ValueError('Unsupported or unknown type {} in types string: {}'.format(c, arg))
-                if not types:
-                    raise ValueError('No value given for type option')
-                finder.append_matcher(TypeMatcher(types))
-            elif current_option == Options.MAX_DEPTH:
-                try:
-                    max_depth = int(arg)
-                except:
-                    raise ValueError('Invalid value given to max depth: {}'.format(arg))
-                finder.set_max_depth(max_depth)
-            elif current_option == Options.MIN_DEPTH:
-                try:
-                    min_depth = int(arg)
-                except:
-                    raise ValueError('Invalid value given to min depth: {}'.format(arg))
-                finder.set_min_depth(min_depth)
-            elif current_option == Options.REGEX_TYPE:
-                if arg == 'py':
-                    current_regex_type = RegexType.PY
-                elif arg == 'sed':
-                    current_regex_type = RegexType.SED
-                elif arg == 'egrep':
-                    current_regex_type = RegexType.EGREP
-                    raise ValueError(
-                        'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(arg))
-            elif current_option == Options.NAME:
-                finder.append_matcher(NameMatcher(arg))
-            elif current_option == Options.WHOLE_NAME:
-                finder.append_matcher(WholeNameMatcher(arg))
-            elif current_option == Options.REGEX:
-                finder.append_matcher(RegexMatcher(arg, current_regex_type))
-            elif current_option == Options.EXEC:
-                if arg != ';':
-                    current_command += [arg]
-                    reset_option = False
-                else:
-                    finder.add_action(ExecuteAction(current_command))
-                    current_command = []
+    actions
+        -print  Print the matching path
+        -print0  Print the matching path without newline
+        -pyprint PYFORMAT  Print using python print() using named args find_root, root, rel_dir, name,
+                        full_path, and st args from os.stat()
+        -pyprint0 PYFORMAT  Same as pyprint except end is set to empty string
+        -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path
+        -delete  Deletes every matching path''')
 
-            if reset_option:
-                current_option = None
+    def _handle_option(self, opt, finder):
+        ''' Called when option parsed, returns True iff arg is expected '''
+        if opt == Options.HELP:
+            self._print_help()
+            sys.exit(0)
+        elif opt == Options.NOT:
+            finder.set_invert(True)
+        elif opt == Options.AND:
+            if not finder.set_logic(LogicOperation.AND):
+                raise ValueError(
+                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
+        elif opt == Options.OR:
+            if not finder.set_logic(LogicOperation.OR):
+                raise ValueError(
+                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
+        elif opt == Options.PRINT:
+            finder.add_action(PrintAction())
+        elif opt == Options.PRINT0:
+            finder.add_action(PrintAction(''))
+        elif opt == Options.DELETE:
+            finder.add_action(DeleteAction())
         else:
-            opt_idx += 1
-            if opt == Options.HELP:
-                _print_help()
-                return 0
-            elif opt == Options.NOT:
-                finder.set_invert(True)
-            elif opt == Options.AND:
-                if not finder.set_logic(LogicOperation.AND):
-                    raise ValueError(
-                        'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
-            elif opt == Options.OR:
-                if not finder.set_logic(LogicOperation.OR):
-                    raise ValueError(
-                        'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
-            elif opt == Options.PRINT:
-                finder.add_action(PrintAction())
-            elif current_option is None:
-                # All other options requre an argument
-                current_option = opt
-        arg_idx += 1
-    if current_command:
-        raise ValueError('arguments to option -exec must end with ;')
-    finder.execute()
-    return 0
+            # All other options require an argument
+            return True
+        return False
+
+    def _handle_arg(self, opt, arg, finder):
+        ''' Handle argument, returns True iff parsing is complete '''
+        complete = True
+        if opt is None or opt == Options.DOUBLEDASH:
+            if arg.startswith('-') and not os.path.isdir(arg):
+                raise ValueError('Unknown predicate: {}'.format(arg))
+            elif self._opt_idx != 0 and opt != Options.DOUBLEDASH:
+                raise ValueError('paths must precede expression: {}'.format(arg))
+            else:
+                finder.add_root_dir(arg)
+        elif opt == Options.TYPE:
+            types = []
+            for c in arg:
+                if c == 'f':
+                    types.append(FindType.FILE)
+                elif c == 'd':
+                    types.append(FindType.DIRECTORY)
+                elif c == 'l':
+                    types.append(FindType.SYMBOLIC_LINK)
+                # Don't require comma like find command, but also don't error out if they are included
+                elif c != ',':
+                    raise ValueError('Unsupported or unknown type {} in types string: {}'.format(c, arg))
+            if not types:
+                raise ValueError('No value given for type option')
+            finder.append_matcher(TypeMatcher(types))
+        elif opt == Options.MAX_DEPTH:
+            try:
+                max_depth = int(arg)
+            except:
+                raise ValueError('Invalid value given to max depth: {}'.format(arg))
+            finder.set_max_depth(max_depth)
+        elif opt == Options.MIN_DEPTH:
+            try:
+                min_depth = int(arg)
+            except:
+                raise ValueError('Invalid value given to min depth: {}'.format(arg))
+            finder.set_min_depth(min_depth)
+        elif opt == Options.REGEX_TYPE:
+            if arg == 'py':
+                self._current_regex_type = RegexType.PY
+            elif arg == 'sed':
+                self._current_regex_type = RegexType.SED
+            elif arg == 'egrep':
+                self._current_regex_type = RegexType.EGREP
+                raise ValueError(
+                    'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(arg))
+        elif opt == Options.NAME:
+            finder.append_matcher(NameMatcher(arg))
+        elif opt == Options.WHOLE_NAME:
+            finder.append_matcher(WholeNameMatcher(arg))
+        elif opt == Options.REGEX:
+            finder.append_matcher(RegexMatcher(arg, self._current_regex_type))
+        elif opt == Options.EXEC:
+            if arg != ';':
+                self._current_command += [arg]
+                complete = False # Continue parsing until ;
+            else:
+                finder.add_action(ExecuteAction(self._current_command))
+                self._current_command = []
+        elif opt == Options.PYPRINT:
+            finder.add_action(PyPrintAction(arg))
+        elif opt == Options.PYPRINT:
+            finder.add_action(PyPrintAction(arg, ''))
+        return complete
+
+    def main(self, cliargs):
+        # Not a good idea to use argparse because find parses arguments in order and uses single dash options
+        self._current_regex_type = RegexType.SED
+        self._arg_idx = 0
+        self._opt_idx = 0
+        self._current_command = []
+        finder = Finder()
+        current_option = None
+        for arg in cliargs:
+            opt = FinderParser.OPTION_DICT.get(arg, None)
+            if opt is None or current_option is not None:
+                # This is an argument to an option
+                if self._handle_arg(current_option, arg, finder):
+                    current_option = None
+            else:
+                self._opt_idx += 1
+                if self._handle_option(opt, finder):
+                    current_option = opt
+            self._arg_idx += 1
+        if self._current_command:
+            raise ValueError('arguments to option -exec must end with ;')
+        finder.execute()
+        return 0
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    finderParser = FinderParser()
+    sys.exit(finderParser.main(sys.argv[1:]))
