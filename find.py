@@ -400,6 +400,7 @@ class FinderParser:
     }
 
     def __init__(self):
+        self._finder = Finder()
         self._arg_idx = 0
         self._opt_idx = 0
         self._current_regex_type = RegexType.SED
@@ -443,33 +444,33 @@ class FinderParser:
         -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path
         -delete  Deletes every matching path''')
 
-    def _handle_option(self, opt, finder):
+    def _handle_option(self, opt):
         ''' Called when option parsed, returns True iff arg is expected '''
         if opt == Options.HELP:
             self._print_help()
             sys.exit(0)
         elif opt == Options.NOT:
-            finder.set_invert(True)
+            self._finder.set_invert(True)
         elif opt == Options.AND:
-            if not finder.set_logic(LogicOperation.AND):
+            if not self._finder.set_logic(LogicOperation.AND):
                 raise ValueError(
                     'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
         elif opt == Options.OR:
-            if not finder.set_logic(LogicOperation.OR):
+            if not self._finder.set_logic(LogicOperation.OR):
                 raise ValueError(
                     'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
         elif opt == Options.PRINT:
-            finder.add_action(PrintAction())
+            self._finder.add_action(PrintAction())
         elif opt == Options.PRINT0:
-            finder.add_action(PrintAction(''))
+            self._finder.add_action(PrintAction(''))
         elif opt == Options.DELETE:
-            finder.add_action(DeleteAction())
+            self._finder.add_action(DeleteAction())
         else:
             # All other options require an argument
             return True
         return False
 
-    def _handle_arg(self, opt, arg, finder):
+    def _handle_arg(self, opt, arg):
         ''' Handle argument, returns True iff parsing is complete '''
         complete = True
         if opt is None or opt == Options.DOUBLEDASH:
@@ -478,7 +479,7 @@ class FinderParser:
             elif self._opt_idx != 0 and opt != Options.DOUBLEDASH:
                 raise ValueError('paths must precede expression: {}'.format(arg))
             else:
-                finder.add_root_dir(arg)
+                self._finder.add_root_dir(arg)
         elif opt == Options.TYPE:
             types = []
             for c in arg:
@@ -493,19 +494,19 @@ class FinderParser:
                     raise ValueError('Unsupported or unknown type {} in types string: {}'.format(c, arg))
             if not types:
                 raise ValueError('No value given for type option')
-            finder.append_matcher(TypeMatcher(types))
+            self._finder.append_matcher(TypeMatcher(types))
         elif opt == Options.MAX_DEPTH:
             try:
                 max_depth = int(arg)
             except:
                 raise ValueError('Invalid value given to max depth: {}'.format(arg))
-            finder.set_max_depth(max_depth)
+            self._finder.set_max_depth(max_depth)
         elif opt == Options.MIN_DEPTH:
             try:
                 min_depth = int(arg)
             except:
                 raise ValueError('Invalid value given to min depth: {}'.format(arg))
-            finder.set_min_depth(min_depth)
+            self._finder.set_min_depth(min_depth)
         elif opt == Options.REGEX_TYPE:
             if arg == 'py':
                 self._current_regex_type = RegexType.PY
@@ -516,22 +517,22 @@ class FinderParser:
                 raise ValueError(
                     'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(arg))
         elif opt == Options.NAME:
-            finder.append_matcher(NameMatcher(arg))
+            self._finder.append_matcher(NameMatcher(arg))
         elif opt == Options.WHOLE_NAME:
-            finder.append_matcher(WholeNameMatcher(arg))
+            self._finder.append_matcher(WholeNameMatcher(arg))
         elif opt == Options.REGEX:
-            finder.append_matcher(RegexMatcher(arg, self._current_regex_type))
+            self._finder.append_matcher(RegexMatcher(arg, self._current_regex_type))
         elif opt == Options.EXEC:
             if arg != ';':
                 self._current_command += [arg]
                 complete = False # Continue parsing until ;
             else:
-                finder.add_action(ExecuteAction(self._current_command))
+                self._finder.add_action(ExecuteAction(self._current_command))
                 self._current_command = []
         elif opt == Options.PYPRINT:
-            finder.add_action(PyPrintAction(arg))
+            self._finder.add_action(PyPrintAction(arg))
         elif opt == Options.PYPRINT:
-            finder.add_action(PyPrintAction(arg, ''))
+            self._finder.add_action(PyPrintAction(arg, ''))
         return complete
 
     def main(self, cliargs):
@@ -540,22 +541,22 @@ class FinderParser:
         self._arg_idx = 0
         self._opt_idx = 0
         self._current_command = []
-        finder = Finder()
+        self._finder = Finder()
         current_option = None
         for arg in cliargs:
             opt = FinderParser.OPTION_DICT.get(arg, None)
             if opt is None or current_option is not None:
                 # This is an argument to an option
-                if self._handle_arg(current_option, arg, finder):
+                if self._handle_arg(current_option, arg):
                     current_option = None
             else:
                 self._opt_idx += 1
-                if self._handle_option(opt, finder):
+                if self._handle_option(opt):
                     current_option = opt
             self._arg_idx += 1
         if self._current_command:
             raise ValueError('arguments to option -exec must end with ;')
-        finder.execute()
+        self._finder.execute()
         return 0
 
 if __name__ == "__main__":
