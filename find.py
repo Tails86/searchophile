@@ -9,6 +9,7 @@ import sys
 from enum import Enum
 import fnmatch
 import re
+import subprocess
 
 class FindType(Enum):
     DIRECTORY = 1
@@ -27,6 +28,17 @@ class Action:
 class PrintAction(Action):
     def handle(self, path):
         print(path)
+
+class ExecuteAction(Action):
+    def __init__(self, command):
+        super().__init__()
+        self._command = command
+
+    def handle(self, path):
+        command = list(self._command)
+        for i in range(len(command)):
+            command[i] = command[i].replace('{}', path)
+        subprocess.run(command)
 
 class PathParser:
     def __init__(self, find_root, path_split=None):
@@ -144,26 +156,22 @@ class RegexMatcher(Matcher):
 
         # Convert given regex type to Python re type
         if self._regex_type == RegexType.SED:
-            # Main difference between sed and re is escaping is inverted in meaning
-            pattern = self._pattern_escape_invert(pattern, '+')
-            pattern = self._pattern_escape_invert(pattern, '?')
-            pattern = self._pattern_escape_invert(pattern, '|')
-            pattern = self._pattern_escape_invert(pattern, '{')
-            pattern = self._pattern_escape_invert(pattern, '}')
-            pattern = self._pattern_escape_invert(pattern, '(')
-            pattern = self._pattern_escape_invert(pattern, ')')
-        # else: just use pattern as-is
+            # Main difference between sed and re is escaping is inverted in meaning for some chars
+            pattern = self._pattern_escape_invert(pattern, '+?|{}()')
+        # else: just use pattern as-is for re
 
         self._pattern = pattern
 
     @staticmethod
-    def _pattern_escape_invert(pattern, char):
-        escaped_char = '\\' + char
-        pattern_split = pattern.split(escaped_char)
-        new_pattern_split = []
-        for piece in pattern_split:
-            new_pattern_split.append(piece.replace(char, escaped_char))
-        return char.join(new_pattern_split)
+    def _pattern_escape_invert(pattern, chars):
+        for char in chars:
+            escaped_char = '\\' + char
+            pattern_split = pattern.split(escaped_char)
+            new_pattern_split = []
+            for piece in pattern_split:
+                new_pattern_split.append(piece.replace(char, escaped_char))
+            pattern = char.join(new_pattern_split)
+        return pattern
 
     def _is_match(self, path_parser):
         try:
@@ -206,13 +214,12 @@ class GatedMatcher(Matcher):
 class Finder:
     def __init__(self):
         self._root_dirs = []
-        self._regex_type = RegexType.PY # TODO: this is currently ignored
         self._min_depth = 0
         self._max_depth = None
         self._matcher = DefaultMatcher()
         self._current_logic = LogicOperation.AND
         self._invert = False
-        self._action = PrintAction()
+        self._actions = []
 
     def add_root_dir(self, root_dir):
         self._root_dirs.append(root_dir)
@@ -223,9 +230,6 @@ class Finder:
     def set_max_depth(self, max_depth):
         self._max_depth = max_depth
 
-    def set_regex_type(self, regex_type):
-        self._regex_type = regex_type
-
     def set_logic(self, logic):
         if isinstance(self._matcher, DefaultMatcher):
             return False
@@ -235,8 +239,8 @@ class Finder:
     def set_invert(self, invert):
         self._invert = invert
 
-    def set_action(self, action):
-        self._action = action
+    def add_action(self, action):
+        self._actions.append(action)
 
     def append_matcher(self, matcher, set_logic=None, set_invert=None):
         if set_logic is not None:
@@ -251,21 +255,8 @@ class Finder:
             self._matcher = matcher
         elif isinstance(self._matcher, GatedMatcher):
             # Gated matcher already in place
-            if self._current_logic == LogicOperation.AND:
-                # AND takes precedence over OR
-                # Replace the right operand of the inner most gate with a new gate
-                last_gate = self._matcher
-                m = last_gate.right_matcher
-                while isinstance(m, GatedMatcher):
-                    last_gate = m
-                    m = last_gate.right_matcher
-                # last_gate now contains the inner most gate
-                # Replace right of last_gate with new gate
-                last_gate.right_matcher = GatedMatcher(last_gate.right_matcher, matcher, self._current_logic)
-            else:
-                # OR
-                # Just append it
-                self._matcher = GatedMatcher(self._matcher, matcher, self._current_logic)
+            # Just append it - find command doesn't take precedence into account, even though it may say it does
+            self._matcher = GatedMatcher(self._matcher, matcher, self._current_logic)
         else:
             self._matcher = GatedMatcher(self._matcher, matcher, self._current_logic)
 
@@ -276,9 +267,10 @@ class Finder:
     def set_matcher(self, matcher):
         self._matcher = matcher
 
-    def _handle_path(self, path_parser):
+    def _handle_path(self, path_parser, actions):
         if self._matcher.is_match(path_parser):
-            self._action.handle(path_parser.full_path)
+            for action in actions:
+                action.handle(path_parser.full_path)
 
     def _is_depth_ok(self, depth):
         return (
@@ -296,18 +288,22 @@ class Finder:
         if not root_dirs:
             # Default to "."
             root_dirs = ['.']
+        actions = self._actions
+        if not actions:
+            # Default to print
+            actions = [PrintAction()]
 
         for root_dir in root_dirs:
             # Check just the root first
             if self._is_depth_ok(0):
-                self._handle_path(PathParser(root_dir))
+                self._handle_path(PathParser(root_dir), actions)
 
             if os.path.isdir(root_dir):
                 # Walk through each
                 for root, dirs, files in os.walk(root_dir, followlinks=False):
                     if self._is_path_depth_ok(root_dir, root):
                         for entity in dirs + files:
-                            self._handle_path(PathParser(root_dir, (root, entity)))
+                            self._handle_path(PathParser(root_dir, (root, entity)), actions)
 
 class Options(Enum):
     HELP = 0
@@ -321,6 +317,8 @@ class Options(Enum):
     NAME = 8
     WHOLE_NAME = 9
     REGEX = 10
+    EXEC = 11
+    PRINT = 12
 
 def _to_option(s):
     if s == '-h' or s == '-help' or s == '--help':
@@ -345,6 +343,10 @@ def _to_option(s):
         return Options.WHOLE_NAME
     elif s == '-regex':
         return Options.REGEX
+    elif s == '-exec':
+        return Options.EXEC
+    elif s == '-print':
+        return Options.PRINT
     return None
 
 def _print_help():
@@ -357,24 +359,27 @@ default path is the current directory (.)
 operators
     ! EXPR
     -not EXPR  Inverts the resulting value of the expression
+    EXPR EXPR
     EXPR -a EXPR
-    EXPR -and EXPR  Logically AND the left and right result (done by default if not specified)
+    EXPR -and EXPR  Logically AND the left and right expressions' result
     EXPR -o EXPR
-    EXPR -or EXPR   Logically OR the left and right result
+    EXPR -or EXPR   Logically OR the left and right expressions' result
 
 normal options
     --help  Shows help and exit
     -maxdepth LEVELS  Sets the maximum directory depth of find (default: inf)
     -mindepth LEVELS  Sets the minimum directory depth of find (default: 0)
-    -regextype type  Set the regex type to
+    -regextype TYPE  Set the regex type to py, sed, egrep (default: sed)
 
 tests
     -name PATTERN  Tests against the name of item using fnmatch
-    -regex PATTERN  Tests against the relative path to the item using re
+    -regex PATTERN  Tests against the path to the item using re
     -type [dfl]  Tests against item type directory, file, or link
-    -wholename PATTERN  Tests against the relative path to the item using fnmatch''')
+    -wholename PATTERN  Tests against the path to the item using fnmatch
 
-# TODO: handle parenthesis around expressions
+actions
+    -print  Print the matching path
+    -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path''')
 
 def main(cliargs):
     # Not a good idea to use argparse because find parses arguments in order and uses single dash options
@@ -383,15 +388,17 @@ def main(cliargs):
     opt_idx = 0
     finder = Finder()
     current_option = None
+    current_command = []
     for arg in cliargs:
         opt = _to_option(arg)
         if opt is None or current_option is not None:
             # This is an argument to an option
+            reset_option = True
             if current_option is None:
                 if arg.startswith('-') and not os.path.isdir(arg):
                     raise ValueError('Unknown predicate: {}'.format(arg))
                 elif opt_idx != 0:
-                    ValueError('paths must precede expression: {}'.format(arg))
+                    raise ValueError('paths must precede expression: {}'.format(arg))
                 else:
                     finder.add_root_dir(arg)
             elif current_option == Options.TYPE:
@@ -436,7 +443,16 @@ def main(cliargs):
                 finder.append_matcher(WholeNameMatcher(arg))
             elif current_option == Options.REGEX:
                 finder.append_matcher(RegexMatcher(arg, current_regex_type))
-            current_option = None
+            elif current_option == Options.EXEC:
+                if arg != ';':
+                    current_command += [arg]
+                    reset_option = False
+                else:
+                    finder.add_action(ExecuteAction(current_command))
+                    current_command = []
+
+            if reset_option:
+                current_option = None
         else:
             opt_idx += 1
             if opt == Options.HELP:
@@ -452,10 +468,14 @@ def main(cliargs):
                 if not finder.set_logic(LogicOperation.OR):
                     raise ValueError(
                         'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
+            elif opt == Options.PRINT:
+                finder.add_action(PrintAction())
             elif current_option is None:
                 # All other options requre an argument
                 current_option = opt
         arg_idx += 1
+    if current_command:
+        raise ValueError('arguments to option -exec must end with ;')
     finder.execute()
     return 0
 
