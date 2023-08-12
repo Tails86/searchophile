@@ -462,6 +462,7 @@ class Finder:
         self._current_logic = LogicOperation.AND
         self._invert = False
         self._actions = []
+        self._verbose = False
 
     def add_root_dir(self, root_dir):
         self._root_dirs.append(root_dir)
@@ -483,6 +484,10 @@ class Finder:
 
     def add_action(self, action):
         self._actions.append(action)
+
+    def set_verbose(self, verbose):
+        # Not yet used locally
+        self._verbose = verbose
 
     def append_matcher(self, matcher, set_logic=None, set_invert=None):
         if set_logic is not None:
@@ -591,6 +596,7 @@ class Options(Enum):
     PYPRINT = enum.auto()
     PYPRINT0 = enum.auto()
     DELETE = enum.auto()
+    VERBOSE = enum.auto()
 
 class FinderArgParser:
     ''' This class parses find arguments into a Finder object '''
@@ -655,7 +661,8 @@ class FinderArgParser:
         '-print0': Options.PRINT0,
         '-pyprint': Options.PYPRINT,
         '-pyprint0': Options.PYPRINT0,
-        '-delete': Options.DELETE
+        '-delete': Options.DELETE,
+        '-verbose': Options.VERBOSE
     }
 
     # Converts newerXY character to os.stat attribute name
@@ -786,6 +793,8 @@ class FinderArgParser:
             finder.append_matcher(GroupMatcher('nogroup'))
         elif self._current_option == Options.NOUSER:
             finder.append_matcher(GroupMatcher('nouser'))
+        elif self._current_option == Options.VERBOSE:
+            finder.set_verbose(True)
         else:
             # All other options require an argument
             return True
@@ -1032,4 +1041,13 @@ def main(cliargs):
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    cliargs = sys.argv[1:]
+    try:
+        sys.exit(main(cliargs))
+    except Exception as e:
+        if '-verbose' not in cliargs:
+            # Format the exception into a less verbose output
+            print('{}: {}'.format(type(e).__name__, str(e)))
+        else:
+            # Allow Python repl to format the exception to output
+            raise e
