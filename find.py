@@ -166,7 +166,8 @@ class ExecuteAction(Action):
         command = list(self._command)
         for i in range(len(command)):
             command[i] = command[i].replace('{}', path_parser.full_path)
-        subprocess.run(command)
+        process = subprocess.Popen(command)
+        process.communicate()
 
 class PyExecuteAction(Action):
     ''' Executes custom command where each element in the command is a format string '''
@@ -179,7 +180,8 @@ class PyExecuteAction(Action):
         d = path_parser.to_pydict()
         for i in range(len(command)):
             command[i] = command[i].format(**d)
-        subprocess.run(command)
+        process = subprocess.Popen(command)
+        process.communicate()
 
 class DeleteAction(Action):
     ''' Deletes the matched item '''
