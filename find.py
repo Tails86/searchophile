@@ -371,7 +371,10 @@ class GroupMatcher(Matcher):
         super().__init__()
         # Don't try to import grp until the user tries to use it
         # Windows will not support this module
-        import grp
+        try:
+            import grp
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('No module named \'grp\' - this OS may not support group matching')
         self._gid = None
         try:
             self._gid = int(gid_or_name)
@@ -391,7 +394,10 @@ class UserMatcher(Matcher):
         super().__init__()
         # Don't try to import pwd until the user tries to use it
         # Windows will not support this module
-        import pwd
+        try:
+            import pwd
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('No module named \'pwd\' - this OS may not support group matching')
         self._uid = None
         try:
             self._uid = int(uid_or_name)
