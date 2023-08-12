@@ -14,16 +14,26 @@ import pwd
 from datetime import datetime, timedelta
 
 class FindType(Enum):
-    DIRECTORY = 1
-    FILE = 2
-    SYMBOLIC_LINK = 3
+    DIRECTORY = enum.auto()
+    FILE = enum.auto()
+    SYMBOLIC_LINK = enum.auto()
 
 class RegexType(Enum):
-    PY = 0
-    SED = 1
-    EGREP = 2
+    PY = enum.auto()
+    SED = enum.auto()
+    EGREP = enum.auto()
+
+class ValueComparison(Enum):
+    EQUAL_TO = enum.auto()
+    GREATER_THAN = enum.auto()
+    LESS_THAN = enum.auto()
+
+class LogicOperation(Enum):
+    OR = enum.auto()
+    AND = enum.auto()
 
 class PathParser:
+    ''' This class helps to parse each element that needs to be matched/executed in find '''
     def __init__(self, find_root, path_split=None):
         '''
         Initialize the PathParser object for use with Finder.
@@ -56,25 +66,31 @@ class PathParser:
 
     @property
     def find_root(self):
+        ''' Returns the find root currently being interrogated '''
         return self._find_root
 
     @property
     def root(self):
+        ''' Returns the directory path of the current item '''
         return self._root
 
     @property
     def rel_dir(self):
+        ''' Returns the directory relative to the find root for the current item '''
         return self._rel_dir
 
     @property
     def name(self):
+        ''' Returns the base name of the item '''
         return self._name
 
     @property
     def full_path(self):
+        ''' Returns the full path to the item '''
         return self._full_path
 
     def get_type(self):
+        ''' Returns the FindType of the item or None if it cannot be determined '''
         if os.path.islink(self._full_path):
             return FindType.SYMBOLIC_LINK
         elif os.path.isdir(self._full_path):
@@ -85,6 +101,10 @@ class PathParser:
             return None
 
     def get_rel_depth(self):
+        '''
+        Returns the depth of the item where 0 is the find_root itself, 1 is an item directly under
+        find_root, etc.
+        '''
         if self._rel_dir is None:
             return 0
         elif not self._rel_dir:
@@ -92,11 +112,28 @@ class PathParser:
         depth = len(self._rel_dir.split(os.sep)) + 1
         return depth
 
+    def to_pydict(self):
+        ''' Returns the dictionary used in -py* actions '''
+        d = {
+            "full_path": self.full_path,
+            "root": self.root,
+            "rel_dir": self.rel_dir,
+            "name": self.name,
+            "find_root": self.find_root
+        }
+        s = os.stat(self.full_path)
+        d.update({k: getattr(s, k) for k in dir(s) if k.startswith('st_')})
+        d['mode_oct'] = oct(s.st_mode)[2:]
+        d['perm'] = oct(s.st_mode & 0o777)[2:]
+        return d
+
 class Action:
+    ''' Action base class - executes something based on the matched path '''
     def handle(self, path_parser):
         pass
 
 class PrintAction(Action):
+    ''' Simply prints the full path of the item '''
     def __init__(self, end=None):
         super().__init__()
         self._end = end
@@ -108,30 +145,21 @@ class PrintAction(Action):
             print(path_parser.full_path)
 
 class PyPrintAction(Action):
+    ''' Prints the item using python format string '''
     def __init__(self, format, end=None):
         super().__init__()
         self._format = format
         self._end = end
 
     def handle(self, path_parser):
-        d = {
-            "full_path": path_parser.full_path,
-            "root": path_parser.root,
-            "rel_dir": path_parser.rel_dir,
-            "name": path_parser.name,
-            "find_root": path_parser.find_root
-        }
-        s = os.stat(path_parser.full_path)
-        d.update({k: getattr(s, k) for k in dir(s) if k.startswith('st_')})
-        d['mode_oct'] = oct(s.st_mode)[2:]
-        d['perm'] = oct(s.st_mode & 0o777)[2:]
-        print_out = self._format.format(**d)
+        print_out = self._format.format(**path_parser.to_pydict())
         if self._end is not None:
             print(print_out, end=self._end)
         else:
             print(print_out)
 
 class ExecuteAction(Action):
+    ''' Executes custom command where {} is the full path to the item '''
     def __init__(self, command):
         super().__init__()
         self._command = command
@@ -142,7 +170,21 @@ class ExecuteAction(Action):
             command[i] = command[i].replace('{}', path_parser.full_path)
         subprocess.run(command)
 
+class PyExecuteAction(Action):
+    ''' Executes custom command where each element in the command is a format string '''
+    def __init__(self, command):
+        super().__init__()
+        self._command = command
+
+    def handle(self, path_parser):
+        command = list(self._command)
+        d = path_parser.to_pydict()
+        for i in range(len(command)):
+            command[i] = command[i].format(**d)
+        subprocess.run(command)
+
 class DeleteAction(Action):
+    ''' Deletes the matched item '''
     def __init__(self):
         super().__init__()
 
@@ -161,6 +203,7 @@ class DeleteAction(Action):
                     print(str(err))
 
 class Matcher:
+    ''' Base matcher class which determines if an item is a match or not '''
     def __init__(self):
         self._invert = False
 
@@ -177,6 +220,7 @@ class Matcher:
         self._invert = invert
 
 class StaticMatcher(Matcher):
+    ''' Statically return True or False for every item '''
     def __init__(self, value):
         super().__init__()
         self._value = value
@@ -185,10 +229,12 @@ class StaticMatcher(Matcher):
         return self._value
 
 class DefaultMatcher(StaticMatcher):
+    ''' The default matcher when none specified '''
     def __init__(self):
         super().__init__(True)
 
 class NameMatcher(Matcher):
+    ''' Matches against the name of the item '''
     def __init__(self, pattern):
         super().__init__()
         self._pattern = pattern
@@ -196,7 +242,8 @@ class NameMatcher(Matcher):
     def _is_match(self, path_parser):
         return fnmatch.fnmatch(path_parser.name, self._pattern)
 
-class WholeNameMatcher(Matcher):
+class FullPathMatcher(Matcher):
+    ''' Matches against the full path of the item '''
     def __init__(self, pattern):
         super().__init__()
         self._pattern = pattern
@@ -205,6 +252,7 @@ class WholeNameMatcher(Matcher):
         return fnmatch.fnmatch(path_parser.full_path, self._pattern)
 
 class RegexMatcher(Matcher):
+    ''' Matches against the full path of the item using regex '''
     def __init__(self, pattern, regex_type):
         super().__init__()
         self._regex_type = regex_type
@@ -236,6 +284,7 @@ class RegexMatcher(Matcher):
             return False
 
 class TypeMatcher(Matcher):
+    ''' Matches against the item's type '''
     def __init__(self, type_list):
         super().__init__()
         self._type_list = type_list
@@ -243,12 +292,8 @@ class TypeMatcher(Matcher):
     def _is_match(self, path_parser):
         return (path_parser.get_type() in self._type_list)
 
-class ValueComparison(Enum):
-    GREATER_THAN = 0
-    LESS_THAN = 1
-    EQUAL_TO = 2
-
 class StatTimeIncrementMatcher(Matcher):
+    ''' Matches against os.stat time relative to current time '''
     def __init__(self, value_comparison, rel_s, increment_s, current_time_s, stat_name):
         super().__init__()
         self._value_comparison = value_comparison
@@ -275,6 +320,7 @@ class StatTimeIncrementMatcher(Matcher):
         return getattr(stat, self._stat_name)
 
 class StatTimeMatcher(Matcher):
+    ''' Matches against os.stat time to an absolute time '''
     def __init__(self, value_comparison, stat_or_time, stat_name, r_stat_name=None):
         super().__init__()
         self._value_comparison = value_comparison
@@ -299,6 +345,7 @@ class StatTimeMatcher(Matcher):
         return getattr(stat, self._stat_name)
 
 class EmptyMatcher(Matcher):
+    ''' Matches when directory empty or file size is 0 bytes '''
     def __init__(self):
         super().__init__()
 
@@ -312,6 +359,7 @@ class EmptyMatcher(Matcher):
             return False
 
 class AccessMatcher(Matcher):
+    ''' Matches against access type for current user (read, write, execute) '''
     def __init__(self, access_type):
         super().__init__()
         self._access_type = access_type
@@ -320,6 +368,7 @@ class AccessMatcher(Matcher):
         return os.access(path_parser.full_path, self._access_type)
 
 class GroupMatcher(Matcher):
+    ''' Matches against group name or ID '''
     def __init__(self, gid_or_name):
         super().__init__()
         self._gid = None
@@ -336,6 +385,7 @@ class GroupMatcher(Matcher):
         return (stat.st_gid == self._gid)
 
 class UserMatcher(Matcher):
+    ''' Matches against user name or ID '''
     def __init__(self, uid_or_name):
         super().__init__()
         self._uid = None
@@ -352,6 +402,7 @@ class UserMatcher(Matcher):
         return (stat.st_uid == self._uid)
 
 class PermMatcher(Matcher):
+    ''' Matches against octal perm value '''
     def __init__(self, perm, logic_operation=None):
         super().__init__()
         self._perm = perm
@@ -369,11 +420,8 @@ class PermMatcher(Matcher):
             # Any of perm bits set
             return ((perm | self._perm) != 0)
 
-class LogicOperation(Enum):
-    OR = 0
-    AND = 1
-
 class GatedMatcher(Matcher):
+    ''' Gates two matchers together using logical AND or OR '''
     def __init__(self, left_matcher, right_matcher, operation=LogicOperation.AND):
         super().__init__()
         self.operation = operation
@@ -393,6 +441,7 @@ class GatedMatcher(Matcher):
             )
 
 class Finder:
+    ''' Finder is capable of walking through paths and execute actions on matching paths '''
     def __init__(self):
         self._root_dirs = []
         self._min_depth = 0
@@ -487,6 +536,7 @@ class Finder:
                             self._handle_path(PathParser(root_dir, (root, entity)), actions)
 
 class Options(Enum):
+    ''' Contains all command line option types '''
     DOUBLEDASH = enum.auto()
     HELP = enum.auto()
     NOT = enum.auto()
@@ -497,7 +547,7 @@ class Options(Enum):
     MIN_DEPTH = enum.auto()
     REGEX_TYPE = enum.auto()
     NAME = enum.auto()
-    WHOLE_NAME = enum.auto()
+    FULL_PATH = enum.auto()
     REGEX = enum.auto()
     AMIN = enum.auto()
     ANEWER = enum.auto()
@@ -523,6 +573,7 @@ class Options(Enum):
     USER = enum.auto()
     WRITABLE = enum.auto()
     EXEC = enum.auto()
+    PYEXEC = enum.auto()
     PRINT = enum.auto()
     PRINT0 = enum.auto()
     PYPRINT = enum.auto()
@@ -530,6 +581,9 @@ class Options(Enum):
     DELETE = enum.auto()
 
 class FinderArgParser:
+    ''' This class parses find arguments into a Finder object '''
+
+    # Converts option string to option type
     OPTION_DICT = {
         '--': Options.DOUBLEDASH,
         '-h': Options.HELP,
@@ -546,8 +600,8 @@ class FinderArgParser:
         '-mindepth': Options.MIN_DEPTH,
         '-regextype': Options.REGEX_TYPE,
         '-name': Options.NAME,
-        '-wholename': Options.WHOLE_NAME,
-        '-path': Options.WHOLE_NAME,
+        '-wholename': Options.FULL_PATH,
+        '-path': Options.FULL_PATH,
         '-regex': Options.REGEX,
         '-amin': Options.AMIN,
         '-anewer': Options.ANEWER,
@@ -584,6 +638,7 @@ class FinderArgParser:
         '-user': Options.USER,
         '-writable': Options.WRITABLE,
         '-exec': Options.EXEC,
+        '-pyexec': Options.PYEXEC,
         '-print': Options.PRINT,
         '-print0': Options.PRINT0,
         '-pyprint': Options.PYPRINT,
@@ -591,6 +646,7 @@ class FinderArgParser:
         '-delete': Options.DELETE
     }
 
+    # Converts newerXY character to os.stat attribute name
     XY_CHAR_TO_STAT_NAME = {
         'a': 'st_atime',
         'c': 'st_ctime',
@@ -678,6 +734,7 @@ class FinderArgParser:
                            any st args from os.stat()
         -pyprint0 PYFORMAT  Same as pyprint except end is set to empty string
         -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path
+        -pyexec PYFORMAT ;  Execute the COMMAND as a pyformat (see pyprint)
         -delete  Deletes every matching path''')
 
     def _handle_option(self, finder):
@@ -724,6 +781,7 @@ class FinderArgParser:
 
     @staticmethod
     def _parse_n(n):
+        ''' Parses an N argument value '''
         if n.startswith('+'):
             value_comparison = ValueComparison.GREATER_THAN
             n = n[1:]
@@ -740,6 +798,7 @@ class FinderArgParser:
 
     @staticmethod
     def _time_to_epoc(t):
+        ''' Parses a time string to epoc '''
         epoc = None
 
         try:
@@ -779,7 +838,7 @@ class FinderArgParser:
         return epoc
 
     def _handle_arg(self, finder):
-        ''' Handle argument, returns True iff parsing is complete '''
+        ''' Handle argument, returns True iff parsing is complete for this option '''
         complete = True
         if self._current_option is None or self._current_option == Options.DOUBLEDASH:
             if self._current_argument.startswith('-') and not os.path.isdir(self._current_argument):
@@ -826,8 +885,8 @@ class FinderArgParser:
                     'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(self._current_argument))
         elif self._current_option == Options.NAME:
             finder.append_matcher(NameMatcher(self._current_argument))
-        elif self._current_option == Options.WHOLE_NAME:
-            finder.append_matcher(WholeNameMatcher(self._current_argument))
+        elif self._current_option == Options.FULL_PATH:
+            finder.append_matcher(FullPathMatcher(self._current_argument))
         elif self._current_option == Options.REGEX:
             finder.append_matcher(RegexMatcher(self._current_argument, self._current_regex_type))
         elif self._current_option == Options.AMIN or self._current_option == Options.CMIN or self._current_option == Options.MMIN:
@@ -911,12 +970,15 @@ class FinderArgParser:
             except ValueError:
                 raise ValueError('Invalid argument for -perm ({}); expected numeric'.format(self._current_argument))
             finder.append_matcher(PermMatcher(perm, logic))
-        elif self._current_option == Options.EXEC:
+        elif self._current_option == Options.EXEC or self._current_option == Options.PYEXEC:
             if self._current_argument != ';':
                 self._current_command += [self._current_argument]
                 complete = False # Continue parsing until ;
             else:
-                finder.add_action(ExecuteAction(self._current_command))
+                if self._current_option == Options.EXEC:
+                    finder.add_action(ExecuteAction(self._current_command))
+                else:
+                    finder.add_action(PyExecuteAction(self._current_command))
                 self._current_command = []
         elif self._current_option == Options.PYPRINT:
             finder.add_action(PyPrintAction(self._current_argument))
@@ -925,6 +987,7 @@ class FinderArgParser:
         return complete
 
     def parse(self, cliargs, finder):
+        ''' Parse the cliargs list into the finder '''
         # argparse is too complex to handle simple commands that find processes
         for arg in cliargs:
             self._current_argument = arg
