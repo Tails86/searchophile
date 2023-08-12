@@ -1,15 +1,17 @@
 #!/usr/bin/python3
 
-'''
-Partially implements posix-style find command.
-'''
-
 import os
 import sys
 from enum import Enum
+import enum
 import fnmatch
 import re
 import subprocess
+import time
+import math
+import grp
+import pwd
+from datetime import datetime, timedelta
 
 class FindType(Enum):
     DIRECTORY = 1
@@ -121,6 +123,8 @@ class PyPrintAction(Action):
         }
         s = os.stat(path_parser.full_path)
         d.update({k: getattr(s, k) for k in dir(s) if k.startswith('st_')})
+        d['mode_oct'] = oct(s.st_mode)[2:]
+        d['perm'] = oct(s.st_mode & 0o777)[2:]
         print_out = self._format.format(**d)
         if self._end is not None:
             print(print_out, end=self._end)
@@ -172,13 +176,17 @@ class Matcher:
     def set_invert(self, invert):
         self._invert = invert
 
-class DefaultMatcher(Matcher):
-    def __init__(self):
+class StaticMatcher(Matcher):
+    def __init__(self, value):
         super().__init__()
+        self._value = value
 
     def _is_match(self, path_parser):
-        # Match everything
-        return True
+        return self._value
+
+class DefaultMatcher(StaticMatcher):
+    def __init__(self):
+        super().__init__(True)
 
 class NameMatcher(Matcher):
     def __init__(self, pattern):
@@ -234,6 +242,132 @@ class TypeMatcher(Matcher):
 
     def _is_match(self, path_parser):
         return (path_parser.get_type() in self._type_list)
+
+class ValueComparison(Enum):
+    GREATER_THAN = 0
+    LESS_THAN = 1
+    EQUAL_TO = 2
+
+class StatTimeIncrementMatcher(Matcher):
+    def __init__(self, value_comparison, rel_s, increment_s, current_time_s, stat_name):
+        super().__init__()
+        self._value_comparison = value_comparison
+        self._rel_s = rel_s
+        self._rel_inc = math.floor(rel_s / increment_s)
+        self._increment_s = increment_s
+        self._current_time_s = current_time_s
+        self._stat_name = stat_name
+
+    def _is_match(self, path_parser):
+        stat = os.stat(path_parser.full_path)
+        # t should be positive
+        t = self._current_time_s - self._get_stat_time(stat)
+        t_inc = math.floor(t / self._increment_s)
+
+        if self._value_comparison == ValueComparison.GREATER_THAN:
+            return (t_inc > self._rel_inc)
+        elif self._value_comparison == ValueComparison.LESS_THAN:
+            return (t_inc < self._rel_inc)
+        else:
+            return (t_inc == self._rel_inc)
+
+    def _get_stat_time(self, stat):
+        return getattr(stat, self._stat_name)
+
+class StatTimeMatcher(Matcher):
+    def __init__(self, value_comparison, stat_or_time, stat_name, r_stat_name=None):
+        super().__init__()
+        self._value_comparison = value_comparison
+        self._stat_name = stat_name
+        if isinstance(stat_or_time, os.stat_result):
+            if r_stat_name is None:
+                r_stat_name = stat_name
+            self._time_point = getattr(stat_or_time, r_stat_name)
+        else:
+            self._time_point = stat_or_time
+
+    def _is_match(self, path_parser):
+        t = self._get_stat_time(os.stat(path_parser.full_path))
+        if self._value_comparison == ValueComparison.GREATER_THAN:
+            return (t > self._time_point)
+        elif self._value_comparison == ValueComparison.LESS_THAN:
+            return (t < self._time_point)
+        else:
+            return (t == self._time_point)
+
+    def _get_stat_time(self, stat):
+        return getattr(stat, self._stat_name)
+
+class EmptyMatcher(Matcher):
+    def __init__(self):
+        super().__init__()
+
+    def _is_match(self, path_parser):
+        if os.path.isfile(path_parser.full_path):
+            stat = os.stat(path_parser.full_path)
+            return (stat.st_size == 0)
+        elif os.path.isdir(path_parser.full_path):
+            return not bool(os.listdir(path_parser.full_path))
+        else:
+            return False
+
+class AccessMatcher(Matcher):
+    def __init__(self, access_type):
+        super().__init__()
+        self._access_type = access_type
+
+    def _is_match(self, path_parser):
+        return os.access(path_parser.full_path, self._access_type)
+
+class GroupMatcher(Matcher):
+    def __init__(self, gid_or_name):
+        super().__init__()
+        self._gid = None
+        try:
+            self._gid = int(gid_or_name)
+        except ValueError:
+            try:
+                self._gid = grp.getgrnam(gid_or_name).gr_gid
+            except KeyError:
+                raise ValueError('Could not locate group \'{}\' on system'.format(gid_or_name))
+
+    def _is_match(self, path_parser):
+        stat = os.stat(path_parser.full_path)
+        return (stat.st_gid == self._gid)
+
+class UserMatcher(Matcher):
+    def __init__(self, uid_or_name):
+        super().__init__()
+        self._uid = None
+        try:
+            self._uid = int(uid_or_name)
+        except ValueError:
+            try:
+                self._uid = pwd.getpwnam(uid_or_name).pw_uid
+            except KeyError:
+                raise ValueError('Could not locate user \'{}\' on system'.format(uid_or_name))
+
+    def _is_match(self, path_parser):
+        stat = os.stat(path_parser.full_path)
+        return (stat.st_uid == self._uid)
+
+class PermMatcher(Matcher):
+    def __init__(self, perm, logic_operation=None):
+        super().__init__()
+        self._perm = perm
+        self._logic_operation = logic_operation
+
+    def _is_match(self, path_parser):
+        stat = os.stat(path_parser.full_path)
+        perm = (stat.st_mode & 0o777)
+        if self._logic_operation is None:
+            return (perm == self._perm)
+        elif self._logic_operation == LogicOperation.AND:
+            # All of perm bits set
+            return ((perm & self._perm) == self._perm)
+        else:
+            # Any of perm bits set
+            return ((perm | self._perm) != 0)
 
 class LogicOperation(Enum):
     OR = 0
@@ -353,26 +487,49 @@ class Finder:
                             self._handle_path(PathParser(root_dir, (root, entity)), actions)
 
 class Options(Enum):
-    DOUBLEDASH = -1
-    HELP = 0
-    NOT = 1
-    AND = 2
-    OR = 3
-    TYPE = 4
-    MAX_DEPTH = 5
-    MIN_DEPTH = 6
-    REGEX_TYPE = 7
-    NAME = 8
-    WHOLE_NAME = 9
-    REGEX = 10
-    EXEC = 11
-    PRINT = 12
-    PRINT0 = 13
-    PYPRINT = 14
-    PYPRINT0 = 15
-    DELETE = 16
+    DOUBLEDASH = enum.auto()
+    HELP = enum.auto()
+    NOT = enum.auto()
+    AND = enum.auto()
+    OR = enum.auto()
+    TYPE = enum.auto()
+    MAX_DEPTH = enum.auto()
+    MIN_DEPTH = enum.auto()
+    REGEX_TYPE = enum.auto()
+    NAME = enum.auto()
+    WHOLE_NAME = enum.auto()
+    REGEX = enum.auto()
+    AMIN = enum.auto()
+    ANEWER = enum.auto()
+    ATIME = enum.auto()
+    CMIN = enum.auto()
+    CNEWER = enum.auto()
+    CTIME = enum.auto()
+    EMPTY = enum.auto()
+    EXECUTABLE = enum.auto()
+    FALSE = enum.auto()
+    GID = enum.auto()
+    GROUP = enum.auto()
+    MMIN = enum.auto()
+    NEWER = enum.auto()
+    NEWERXY = enum.auto()
+    MTIME = enum.auto()
+    NOGROUP = enum.auto()
+    NOUSER = enum.auto()
+    PERM = enum.auto()
+    READABLE = enum.auto()
+    TRUE = enum.auto()
+    UID = enum.auto()
+    USER = enum.auto()
+    WRITABLE = enum.auto()
+    EXEC = enum.auto()
+    PRINT = enum.auto()
+    PRINT0 = enum.auto()
+    PYPRINT = enum.auto()
+    PYPRINT0 = enum.auto()
+    DELETE = enum.auto()
 
-class FinderParser:
+class FinderArgParser:
     OPTION_DICT = {
         '--': Options.DOUBLEDASH,
         '-h': Options.HELP,
@@ -390,7 +547,42 @@ class FinderParser:
         '-regextype': Options.REGEX_TYPE,
         '-name': Options.NAME,
         '-wholename': Options.WHOLE_NAME,
+        '-path': Options.WHOLE_NAME,
         '-regex': Options.REGEX,
+        '-amin': Options.AMIN,
+        '-anewer': Options.ANEWER,
+        '-atime': Options.ATIME,
+        '-cmin': Options.CMIN,
+        '-cnewer': Options.CNEWER,
+        '-ctime': Options.CTIME,
+        '-empty': Options.EMPTY,
+        '-executable': Options.EXECUTABLE,
+        '-false': Options.FALSE,
+        '-gid': Options.GID,
+        '-group': Options.GROUP,
+        '-mmin': Options.MMIN,
+        '-newer': Options.NEWER,
+        '-neweraa': Options.NEWERXY,
+        '-newerac': Options.NEWERXY,
+        '-neweram': Options.NEWERXY,
+        '-newerat': Options.NEWERXY,
+        '-newerca': Options.NEWERXY,
+        '-newercB': Options.NEWERXY,
+        '-newercm': Options.NEWERXY,
+        '-newerct': Options.NEWERXY,
+        '-newerma': Options.NEWERXY,
+        '-newermB': Options.NEWERXY,
+        '-newermm': Options.NEWERXY,
+        '-newermt': Options.NEWERXY,
+        '-mtime': Options.MTIME,
+        '-nogroup': Options.NOGROUP,
+        '-nouser': Options.NOGROUP,
+        '-perm': Options.PERM,
+        '-readable': Options.READABLE,
+        '-true': Options.TRUE,
+        '-uid': Options.UID,
+        '-user': Options.USER,
+        '-writable': Options.WRITABLE,
         '-exec': Options.EXEC,
         '-print': Options.PRINT,
         '-print0': Options.PRINT0,
@@ -399,12 +591,21 @@ class FinderParser:
         '-delete': Options.DELETE
     }
 
+    XY_CHAR_TO_STAT_NAME = {
+        'a': 'st_atime',
+        'c': 'st_ctime',
+        'm': 'st_mtime'
+    }
+
     def __init__(self):
-        self._finder = Finder()
+        self._now = time.time()
         self._arg_idx = 0
         self._opt_idx = 0
         self._current_regex_type = RegexType.SED
         self._current_command = []
+        self._current_option = None
+        self._current_option_name = None
+        self._current_argument = None
 
     @staticmethod
     def _print_help():
@@ -412,7 +613,7 @@ class FinderParser:
 
     Usage: find.py [path...] [expression...]
 
-    default path is the current directory (.)
+    default path is the current directory (.); default action is -print
 
     operators
         ! EXPR
@@ -433,56 +634,163 @@ class FinderParser:
         -name PATTERN  Tests against the name of item using fnmatch
         -regex PATTERN  Tests against the path to the item using re
         -type [dfl]  Tests against item type directory, file, or link
+        -path PATTERN
         -wholename PATTERN  Tests against the path to the item using fnmatch
+        -amin [+-]N  Last accessed N, greater than +N, or less than -N minutes ago
+        -anewer FILE  Last accessed time is more recent than given file
+        -atime [+-]N  Last accessed N, greater than +N, or less than -N days ago
+        -cmin [+-]N  Change N, greater than +N, or less than -N minutes ago
+        -cnewer FILE  Change time is more recent than given file
+        -ctime [+-]N  Change N, greater than +N, or less than -N days ago
+        -empty  File is 0 bytes or directory empty
+        -executable  Matches items which are executable by current user
+        -false  Always false
+        -gid GID  Matches with group ID
+        -group GNAME  Matches with group name or ID
+        -mmin [+-]N  Modified N, greater than +N, or less than -N minutes ago
+        -newer FILE  Modified time is more recent than given file
+        -mtime [+-]N  Modified N, greater than +N, or less than -N days ago
+        -newerXY REF  Matches REF X < item Y where X and Y can be:
+                      a: Accessed time of item or REF
+                      c: Change time of item or REF
+                      m: Modified time of item or REF
+                      t: REF is timestamp (only valid for X)
+        -nogroup  Matches items which aren't assigned to a group
+        -nouser  Matches items which aren't assigned to a user
+        -perm [-/]PERM  Matches exactly bits in PERM, all in -PERM, any in /PERM
+        -readable  Matches items which are readable by current user
+        -true  Always true
+        -uid UID  Matches with user ID
+        -user UNAME  Matches with user name or ID
+        -writable  Matches items which are writable by current user
 
     actions
         -print  Print the matching path
         -print0  Print the matching path without newline
-        -pyprint PYFORMAT  Print using python print() using named args find_root, root, rel_dir, name,
-                        full_path, and st args from os.stat()
+        -pyprint PYFORMAT  Print using python print() using named args:
+                           find_root: the root given to find.py
+                           root: the directory name this item is in
+                           rel_dir: the relative directory name from root
+                           name: the name of the item
+                           full_path: the full path of the item
+                           mode_oct: st_mode as octal string
+                           perm: the octal permission value
+                           any st args from os.stat()
         -pyprint0 PYFORMAT  Same as pyprint except end is set to empty string
         -exec COMMAND ;  Execute the COMMAND where {} in the command is the matching path
         -delete  Deletes every matching path''')
 
-    def _handle_option(self, opt):
+    def _handle_option(self, finder):
         ''' Called when option parsed, returns True iff arg is expected '''
-        if opt == Options.HELP:
+        if self._current_option == Options.HELP:
             self._print_help()
             sys.exit(0)
-        elif opt == Options.NOT:
-            self._finder.set_invert(True)
-        elif opt == Options.AND:
-            if not self._finder.set_logic(LogicOperation.AND):
+        elif self._current_option == Options.NOT:
+            finder.set_invert(True)
+        elif self._current_option == Options.AND:
+            if not finder.set_logic(LogicOperation.AND):
                 raise ValueError(
-                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
-        elif opt == Options.OR:
-            if not self._finder.set_logic(LogicOperation.OR):
+                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(self._current_argument))
+        elif self._current_option == Options.OR:
+            if not finder.set_logic(LogicOperation.OR):
                 raise ValueError(
-                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(arg))
-        elif opt == Options.PRINT:
-            self._finder.add_action(PrintAction())
-        elif opt == Options.PRINT0:
-            self._finder.add_action(PrintAction(''))
-        elif opt == Options.DELETE:
-            self._finder.add_action(DeleteAction())
+                    'invalid expression; you have used a binary operator \'{}\' with nothing before it.'.format(self._current_argument))
+        elif self._current_option == Options.PRINT:
+            finder.add_action(PrintAction())
+        elif self._current_option == Options.PRINT0:
+            finder.add_action(PrintAction(''))
+        elif self._current_option == Options.DELETE:
+            finder.add_action(DeleteAction())
+        elif self._current_option == Options.EMPTY:
+            finder.append_matcher(EmptyMatcher())
+        elif self._current_option == Options.EXECUTABLE:
+            finder.append_matcher(AccessMatcher(os.X_OK))
+        elif self._current_option == Options.READABLE:
+            finder.append_matcher(AccessMatcher(os.R_OK))
+        elif self._current_option == Options.WRITABLE:
+            finder.append_matcher(AccessMatcher(os.W_OK))
+        elif self._current_option == Options.FALSE:
+            finder.append_matcher(StaticMatcher(False))
+        elif self._current_option == Options.TRUE:
+            finder.append_matcher(StaticMatcher(True))
+        elif self._current_option == Options.NOGROUP:
+            finder.append_matcher(GroupMatcher('nogroup'))
+        elif self._current_option == Options.NOUSER:
+            finder.append_matcher(GroupMatcher('nouser'))
         else:
             # All other options require an argument
             return True
         return False
 
-    def _handle_arg(self, opt, arg):
+    @staticmethod
+    def _parse_n(n):
+        if n.startswith('+'):
+            value_comparison = ValueComparison.GREATER_THAN
+            n = n[1:]
+        elif n.startswith('-'):
+            value_comparison = ValueComparison.LESS_THAN
+            n = n[1:]
+        else:
+            value_comparison = ValueComparison.EQUAL_TO
+        try:
+            value = float(n)
+        except ValueError:
+            value = None
+        return [value_comparison, value]
+
+    @staticmethod
+    def _time_to_epoc(t):
+        epoc = None
+
+        try:
+            epoc = float(t)
+        except ValueError:
+            if t.endswith('Z'):
+                is_utc = True
+                t = t[:-1]
+            else:
+                is_utc = False
+
+            time_formats = [
+                '%Y-%m-%d %H:%M:%S.%f',
+                '%Y-%m-%dT%H:%M:%S.%f',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%d %H:%M',
+                '%Y-%m-%dT%H:%M',
+                '%Y-%m-%d'
+            ]
+
+            date_time = None
+            for format in time_formats:
+                try:
+                    date_time = datetime.strptime(t, format)
+                    break
+                except ValueError:
+                    # continue looping
+                    pass
+
+            if date_time is not None:
+                if not is_utc:
+                    # Adjust for current system time
+                    date_time += timedelta(hours=-time.daylight, seconds=time.timezone)
+                epoc = (date_time - datetime(1970, 1, 1)).total_seconds()
+
+        return epoc
+
+    def _handle_arg(self, finder):
         ''' Handle argument, returns True iff parsing is complete '''
         complete = True
-        if opt is None or opt == Options.DOUBLEDASH:
-            if arg.startswith('-') and not os.path.isdir(arg):
-                raise ValueError('Unknown predicate: {}'.format(arg))
-            elif self._opt_idx != 0 and opt != Options.DOUBLEDASH:
-                raise ValueError('paths must precede expression: {}'.format(arg))
+        if self._current_option is None or self._current_option == Options.DOUBLEDASH:
+            if self._current_argument.startswith('-') and not os.path.isdir(self._current_argument):
+                raise ValueError('Unknown predicate: {}'.format(self._current_argument))
+            elif self._opt_idx != 0 and self._current_option != Options.DOUBLEDASH:
+                raise ValueError('paths must precede expression: {}'.format(self._current_argument))
             else:
-                self._finder.add_root_dir(arg)
-        elif opt == Options.TYPE:
+                finder.add_root_dir(self._current_argument)
+        elif self._current_option == Options.TYPE:
             types = []
-            for c in arg:
+            for c in self._current_argument:
                 if c == 'f':
                     types.append(FindType.FILE)
                 elif c == 'd':
@@ -491,74 +799,162 @@ class FinderParser:
                     types.append(FindType.SYMBOLIC_LINK)
                 # Don't require comma like find command, but also don't error out if they are included
                 elif c != ',':
-                    raise ValueError('Unsupported or unknown type {} in types string: {}'.format(c, arg))
+                    raise ValueError('Unsupported or unknown type {} in types string: {}'.format(c, self._current_argument))
             if not types:
                 raise ValueError('No value given for type option')
-            self._finder.append_matcher(TypeMatcher(types))
-        elif opt == Options.MAX_DEPTH:
+            finder.append_matcher(TypeMatcher(types))
+        elif self._current_option == Options.MAX_DEPTH:
             try:
-                max_depth = int(arg)
+                max_depth = int(self._current_argument)
             except:
-                raise ValueError('Invalid value given to max depth: {}'.format(arg))
-            self._finder.set_max_depth(max_depth)
-        elif opt == Options.MIN_DEPTH:
+                raise ValueError('Invalid value given to max depth: {}'.format(self._current_argument))
+            finder.set_max_depth(max_depth)
+        elif self._current_option == Options.MIN_DEPTH:
             try:
-                min_depth = int(arg)
+                min_depth = int(self._current_argument)
             except:
-                raise ValueError('Invalid value given to min depth: {}'.format(arg))
-            self._finder.set_min_depth(min_depth)
-        elif opt == Options.REGEX_TYPE:
-            if arg == 'py':
+                raise ValueError('Invalid value given to min depth: {}'.format(self._current_argument))
+            finder.set_min_depth(min_depth)
+        elif self._current_option == Options.REGEX_TYPE:
+            if self._current_argument == 'py':
                 self._current_regex_type = RegexType.PY
-            elif arg == 'sed':
+            elif self._current_argument == 'sed':
                 self._current_regex_type = RegexType.SED
-            elif arg == 'egrep':
+            elif self._current_argument == 'egrep':
                 self._current_regex_type = RegexType.EGREP
                 raise ValueError(
-                    'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(arg))
-        elif opt == Options.NAME:
-            self._finder.append_matcher(NameMatcher(arg))
-        elif opt == Options.WHOLE_NAME:
-            self._finder.append_matcher(WholeNameMatcher(arg))
-        elif opt == Options.REGEX:
-            self._finder.append_matcher(RegexMatcher(arg, self._current_regex_type))
-        elif opt == Options.EXEC:
-            if arg != ';':
-                self._current_command += [arg]
+                    'Unknown regular expression type {}; valid types are py, sed, egrep.'.format(self._current_argument))
+        elif self._current_option == Options.NAME:
+            finder.append_matcher(NameMatcher(self._current_argument))
+        elif self._current_option == Options.WHOLE_NAME:
+            finder.append_matcher(WholeNameMatcher(self._current_argument))
+        elif self._current_option == Options.REGEX:
+            finder.append_matcher(RegexMatcher(self._current_argument, self._current_regex_type))
+        elif self._current_option == Options.AMIN or self._current_option == Options.CMIN or self._current_option == Options.MMIN:
+            value_comparison, value = __class__._parse_n(self._current_argument)
+            if value is None:
+                raise ValueError('Invalid argument for -amin ({}); expected numeric'.format(self._current_argument))
+            increment = 60.0
+            matcher_args = [value_comparison, value * increment, increment, self._now]
+            if self._current_option == Options.AMIN:
+                matcher_args += ['st_atime']
+            elif self._current_option == Options.CMIN:
+                matcher_args += ['st_ctime']
+            else:
+                matcher_args += ['st_mtime']
+            finder.append_matcher(StatTimeIncrementMatcher(*matcher_args))
+        elif self._current_option == Options.ANEWER or self._current_option == Options.CNEWER or self._current_option == Options.NEWER:
+            if os.path.exists(self._current_argument):
+                s = os.stat(self._current_argument)
+                matcher_args = [ValueComparison.GREATER_THAN, s]
+                if self._current_option == Options.ANEWER:
+                    matcher_args += ['st_atime']
+                elif self._current_option == Options.CNEWER:
+                    matcher_args += ['st_ctime']
+                else:
+                    matcher_args += ['st_mtime']
+                finder.append_matcher(StatTimeMatcher(*matcher_args))
+            else:
+                raise FileNotFoundError('Cannot find path at \'{}\' for -anewer'.format(self._current_argument))
+        elif self._current_option == Options.NEWERXY:
+            r_stat_name = __class__.XY_CHAR_TO_STAT_NAME.get(self._current_option_name[-1], None)
+            if r_stat_name is None:
+                # Argument is absolute time
+                stat_or_time = __class__._time_to_epoc(self._current_argument)
+            elif os.path.exists(self._current_argument):
+                stat_or_time = os.stat(self._current_argument)
+            else:
+                raise FileNotFoundError('Cannot find path at \'{}\' for {}'
+                                        .format(self._current_argument, self._current_option_name))
+            stat_name = __class__.XY_CHAR_TO_STAT_NAME.get(self._current_option_name[-2], 'st_mtime')
+            finder.append_matcher(StatTimeMatcher(ValueComparison.GREATER_THAN, stat_or_time, stat_name, r_stat_name))
+        elif self._current_option == Options.ATIME or self._current_option == Options.CTIME or self._current_option == Options.MTIME:
+            value_comparison, value = __class__._parse_n(self._current_argument)
+            if value is None:
+                raise ValueError('Invalid argument for -time ({}); expected numeric'.format(self._current_argument))
+            increment = 24.0 * 60.0 * 60.0
+            matcher_args = [value_comparison, value * increment, increment, self._now]
+            if self._current_option == Options.ATIME:
+                matcher_args += ['st_atime']
+            elif self._current_option == Options.CTIME:
+                matcher_args += ['st_ctime']
+            else:
+                matcher_args += ['st_mtime']
+            finder.append_matcher(StatTimeIncrementMatcher(*matcher_args))
+        elif self._current_option == Options.GID:
+            try:
+                gid = int(self._current_argument)
+            except ValueError:
+                raise ValueError('Invalid argument for -gid ({}); expected numeric'.format(self._current_argument))
+            finder.append_matcher(GroupMatcher(gid))
+        elif self._current_option == Options.GROUP:
+            finder.append_matcher(GroupMatcher(self._current_argument))
+        elif self._current_option == Options.UID:
+            try:
+                uid = int(self._current_argument)
+            except ValueError:
+                raise ValueError('Invalid argument for -uid ({}); expected numeric'.format(self._current_argument))
+            finder.append_matcher(UserMatcher(uid))
+        elif self._current_option == Options.USER:
+            finder.append_matcher(UserMatcher(self._current_argument))
+        elif self._current_option == Options.PERM:
+            logic = None
+            perm = self._current_argument
+            if perm.startswith('-'):
+                logic = LogicOperation.AND
+                perm = perm[1:]
+            elif perm.startswith('/'):
+                logic = LogicOperation.OR
+                perm = perm[1:]
+            try:
+                perm = int(perm, base=8)
+            except ValueError:
+                raise ValueError('Invalid argument for -perm ({}); expected numeric'.format(self._current_argument))
+            finder.append_matcher(PermMatcher(perm, logic))
+        elif self._current_option == Options.EXEC:
+            if self._current_argument != ';':
+                self._current_command += [self._current_argument]
                 complete = False # Continue parsing until ;
             else:
-                self._finder.add_action(ExecuteAction(self._current_command))
+                finder.add_action(ExecuteAction(self._current_command))
                 self._current_command = []
-        elif opt == Options.PYPRINT:
-            self._finder.add_action(PyPrintAction(arg))
-        elif opt == Options.PYPRINT:
-            self._finder.add_action(PyPrintAction(arg, ''))
+        elif self._current_option == Options.PYPRINT:
+            finder.add_action(PyPrintAction(self._current_argument))
+        elif self._current_option == Options.PYPRINT0:
+            finder.add_action(PyPrintAction(self._current_argument, ''))
         return complete
 
-    def main(self, cliargs):
-        # Not a good idea to use argparse because find parses arguments in order and uses single dash options
-        self._current_regex_type = RegexType.SED
-        self._arg_idx = 0
-        self._opt_idx = 0
-        self._current_command = []
-        self._finder = Finder()
-        current_option = None
+    def parse(self, cliargs, finder):
+        # argparse is too complex to handle simple commands that find processes
         for arg in cliargs:
-            opt = FinderParser.OPTION_DICT.get(arg, None)
-            if opt is None or current_option is not None:
+            self._current_argument = arg
+            opt = __class__.OPTION_DICT.get(arg, None)
+            if opt is None or self._current_option is not None:
                 # This is an argument to an option
-                if self._handle_arg(current_option, arg):
-                    current_option = None
+                if self._handle_arg(finder):
+                    self._current_option = None
+                    self._current_option_name = None
             else:
                 self._opt_idx += 1
-                if self._handle_option(opt):
-                    current_option = opt
+                self._current_option = opt
+                self._current_option_name = arg
+                if not self._handle_option(finder):
+                    self._current_option = None
+                    self._current_option_name = None
             self._arg_idx += 1
         if self._current_command:
             raise ValueError('arguments to option -exec must end with ;')
-        self._finder.execute()
+        return True
+
+def main(cliargs):
+    arg_parser = FinderArgParser()
+    finder = Finder()
+    if arg_parser.parse(cliargs, finder):
+        finder.execute()
         return 0
+    else:
+        print('Failed to parse arguments')
+        return 1
 
 if __name__ == "__main__":
-    finderParser = FinderParser()
-    sys.exit(finderParser.main(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:]))

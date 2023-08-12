@@ -167,7 +167,7 @@ def _build_find_command(args):
     file_name_regex = ['.*/' + item.lstrip('^') for item in args.regex_names]
     all_regex_names = args.regex_whole_names + file_name_regex
     names_dict = {'-name': args.names,
-                  '-wholename': args.whole_names,
+                  '-path': args.whole_names,
                   '-regex': all_regex_names}
     for (name_arg, names) in names_dict.items():
         for name in names:
