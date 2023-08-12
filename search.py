@@ -341,9 +341,14 @@ def main(cliargs):
     args = _parse_args(cliargs)
     find_command = _build_find_command(args)
     grep_command = _build_grep_command(args, False)
-    # If not silent, print the CLI equivalent of what is about to be done
+    # If not silent, print the approximate CLI equivalent of what is about to be done
     if not args.silent:
-        _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(_build_grep_command(args, True)))
+        _print_command(
+            _quotify_command(find_command) +
+            ['-exec'] +
+            _quotify_command(_build_grep_command(args, True)) +
+            ['{}', '\;']
+        )
     if not args.dry_run:
         # Execute find to get all files
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -364,7 +369,7 @@ def main(cliargs):
                     args=(grep_process, lambda line: _grep_output_tweaks(line, args, file_list)))
                 print_thread.start()
 
-            # Wait until complete for good measure
+            # Wait until complete
             grep_process.wait()
             if print_thread:
                 print_thread.join()
