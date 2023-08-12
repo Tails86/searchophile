@@ -399,7 +399,7 @@ class UserMatcher(Matcher):
         try:
             import pwd
         except ModuleNotFoundError:
-            raise ModuleNotFoundError('No module named \'pwd\' - this OS may not support group matching')
+            raise ModuleNotFoundError('No module named \'pwd\' - this OS may not support user matching')
         self._uid = None
         try:
             self._uid = int(uid_or_name)
