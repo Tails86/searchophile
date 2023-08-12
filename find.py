@@ -514,10 +514,12 @@ class Finder:
     def set_matcher(self, matcher):
         self._matcher = matcher
 
-    def _handle_path(self, path_parser, actions):
+    def _handle_path(self, path_parser, actions, match_list):
         if self._matcher.is_match(path_parser):
             for action in actions:
                 action.handle(path_parser)
+            if match_list is not None:
+                match_list.append(path_parser)
 
     def _is_depth_ok(self, depth):
         return (
@@ -530,27 +532,35 @@ class Finder:
         depth = path_parser.get_rel_depth()
         return self._is_depth_ok(depth)
 
-    def execute(self):
+    def execute(self, default_root='.', default_action=PrintAction, return_list=False):
         root_dirs = self._root_dirs
-        if not root_dirs:
+        if not root_dirs and default_root is not None:
             # Default to "."
-            root_dirs = ['.']
+            root_dirs = [default_root]
         actions = self._actions
-        if not actions:
+        if not actions and default_action is not None:
             # Default to print
-            actions = [PrintAction()]
+            actions = [default_action()]
+
+        # If return_list is set to true, set match_list so it can be filled
+        # Otherwise, it will remain None and None will be returned
+        match_list = None
+        if return_list:
+            match_list = []
 
         for root_dir in root_dirs:
             # Check just the root first
             if self._is_depth_ok(0):
-                self._handle_path(PathParser(root_dir), actions)
+                self._handle_path(PathParser(root_dir), actions, match_list)
 
             if os.path.isdir(root_dir):
                 # Walk through each
                 for root, dirs, files in os.walk(root_dir, followlinks=False):
                     if self._is_path_depth_ok(root_dir, root):
                         for entity in dirs + files:
-                            self._handle_path(PathParser(root_dir, (root, entity)), actions)
+                            self._handle_path(PathParser(root_dir, (root, entity)), actions, match_list)
+
+        return match_list
 
 class Options(Enum):
     ''' Contains all command line option types '''
