@@ -9,8 +9,6 @@ import re
 import subprocess
 import time
 import math
-import grp
-import pwd
 from datetime import datetime, timedelta
 
 class FindType(Enum):
@@ -371,6 +369,9 @@ class GroupMatcher(Matcher):
     ''' Matches against group name or ID '''
     def __init__(self, gid_or_name):
         super().__init__()
+        # Don't try to import grp until the user tries to use it
+        # Windows will not support this module
+        import grp
         self._gid = None
         try:
             self._gid = int(gid_or_name)
@@ -388,6 +389,9 @@ class UserMatcher(Matcher):
     ''' Matches against user name or ID '''
     def __init__(self, uid_or_name):
         super().__init__()
+        # Don't try to import pwd until the user tries to use it
+        # Windows will not support this module
+        import pwd
         self._uid = None
         try:
             self._uid = int(uid_or_name)
