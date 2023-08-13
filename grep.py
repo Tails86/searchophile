@@ -2,6 +2,7 @@
 
 import sys
 import argparse
+from enum import Enum
 
 class AutoInputFileIterable:
     def __init__(self, file_path, file_mode='r', newline_str=None):
@@ -33,6 +34,204 @@ class StdinIterable:
     def name(self):
         return '(standard input)'
 
+class AnsiFormat(Enum):
+    RESET='0'
+    BOLD='1'
+    FAINT='2'
+    ITALIC='3'
+    UNDERLINE='4'
+    SLOW_BLINK='5'
+    RAPID_BLINK='6'
+    SWAP_BG_FG='7'
+    HIDE='8'
+    CROSSED_OUT='9'
+    DEFAULT_FONT='10'
+    ALT_FONT_1='11'
+    ALT_FONT_2='12'
+    ALT_FONT_3='13'
+    ALT_FONT_4='14'
+    ALT_FONT_5='15'
+    ALT_FONT_6='16'
+    ALT_FONT_7='17'
+    ALT_FONT_8='18'
+    ALT_FONT_9='19'
+    GOTHIC_FONT='20'
+    DOUBLE_UNDERLINE='21'
+    NO_BOLD_FAINT='22'
+    NO_ITALIC='23'
+    NO_UNDERLINE='24'
+    NO_BLINK='25'
+    PROPORTIONAL_SPACING='26'
+    NO_SWAP_BG_FG='27'
+    NO_HIDE='28'
+    NO_CROSSED_OUT='29'
+    NO_PROPORTIONAL_SPACING='50'
+    FRAMED='51'
+    ENCIRCLED='52'
+    OVERLINED='53'
+    NO_FRAMED_ENCIRCLED='54'
+    NO_OVERLINED='55'
+    SET_UNDERLINE_COLOR='58' # Must be proceeded by rgb values
+    DEFAULT_UNDERLINE_COLOR='59'
+
+    FG_BLACK='30'
+    FG_RED='31'
+    FG_GREEN='32'
+    FG_YELLOW='33'
+    FG_BLUE='34'
+    FG_MAGENTA='35'
+    FG_CYAN='36'
+    FG_WHITE='37'
+    FG_SET='38' # Must be proceeded by rgb values
+    FG_DEFAULT='39'
+    FG_ORANGE=FG_SET+';5;202'
+    FG_PURPLE=FG_SET+';5;129'
+
+    BG_BLACK='40'
+    BG_RED='41'
+    BG_GREEN='42'
+    BG_YELLOW='43'
+    BG_BLUE='44'
+    BG_MAGENTA='45'
+    BG_CYAN='46'
+    BG_WHITE='47'
+    BG_SET='48' # Must be proceeded by rgb values
+    BG_DEFAULT='49'
+    BG_ORANGE=BG_SET+';5;202'
+    BG_PURPLE=BG_SET+';5;129'
+
+class AnsiString:
+    '''
+    Represents an ANSI colorized/formatted string. All or part of the string may contain style and
+    color formatting which may be used to print out to an ANSI-supported terminal such as those
+    on Linux, Mac, and Windows 10+.
+
+    Example 1:
+    s = AnsiString('This string is red and bold string', [AnsiFormat.BOLD, AnsiFormat.FG_RED])
+    print(s)
+
+    Example 2:
+    s = AnsiString('This string contains custom formatting', '38;2;175;95;95')
+    print(s)
+
+    Example 2:
+    s = AnsiString('This string contains multiple color settings')
+    s.apply_formatting(AnsiFormat.BOLD, 5, 6)
+    s.apply_formatting(AnsiFormat.BG_BLUE, 21, 8)
+    s.apply_formatting([AnsiFormat.FG_ORANGE, AnsiFormat.ITALIC], 21, 14)
+    print(s)
+    '''
+
+    class Settings:
+        '''
+        Internal use only - mainly used to create a unique objects which may contain same strings
+        '''
+        def __init__(self, setting_or_settings):
+            if not isinstance(setting_or_settings, list):
+                settings = [setting_or_settings]
+            else:
+                settings = setting_or_settings
+
+            for i in range(len(settings)):
+                if isinstance(settings[i], str):
+                    # Use string verbatim
+                    pass
+                elif hasattr(settings[i], 'value') and isinstance(settings[i].value, str):
+                    # Likely an enumeration - use the value
+                    settings[i] = settings[i].value
+                else:
+                    raise TypeError('Unsupported type for setting_or_settings: {}'.format(type(setting_or_settings)))
+
+            self._str = ';'.join(settings)
+
+        def __str__(self):
+            return self._str
+
+    def __init__(self, s='', setting_or_settings=None):
+        self._s = s
+        # Key is the string index to make a color change at
+        # Each value element is a list of 2 lists
+        #   index 0: the settings to apply at this string index
+        #   index 1: the settings to remove at this string index
+        self._color_settings = {}
+        if setting_or_settings:
+            self.apply_formatting(setting_or_settings)
+        # Cached output is used to optimize frequent calls to str()
+        self._cached_output = None
+
+    def assign_str(self, s):
+        self._cached_output = None
+        self._s = s
+
+    def _insert_settings(self, idx, apply, settings_str):
+        self._cached_output = None
+        if idx not in self._color_settings:
+            self._color_settings[idx] = [[],[]]
+        self._color_settings[idx][0 if apply else 1].append(settings_str)
+
+    def apply_formatting(self, setting_or_settings, start_idx=0, length=None):
+        '''
+        Sets the formatting for a given range of characters.
+        Inputs: setting_or_settings - Can either be a single item or list of items;
+                                      each item can either be a string or AnsiFormat type
+                start_idx - The string start index where setting(s) are to be applied
+                length - Number of characters to apply settings or None to apply until end of string
+
+        Note: The desired effect may not be achieved if the same setting is applied over an
+              overlapping range of characters.
+        '''
+        settings = __class__.Settings(setting_or_settings)
+
+        # Apply settings
+        self._insert_settings(start_idx, True, settings)
+
+        if length is not None:
+            # Remove settings
+            self._insert_settings(start_idx + length, False, settings)
+
+    def __str__(self):
+        if self._cached_output is not None:
+            return self._cached_output
+
+        out_str = ''
+        current_settings = []
+        last_idx = 0
+
+        for idx in sorted(self._color_settings):
+            if idx >= len(self._s):
+                # Invalid
+                break
+            settings = self._color_settings[idx]
+            # Catch up output to current index
+            out_str += self._s[last_idx:idx]
+            last_idx = idx
+            # Remove settings that it is time to remove
+            for setting in settings[1]:
+                # setting object will only be matched and removed if it is the same reference to one
+                # previously added - will raise exception otherwise which should not happen if the
+                # settings dictionary and this method were setup correctly.
+                current_settings.remove(setting)
+            # Apply settings that it is time to add
+            current_settings += settings[0]
+            if current_settings:
+                settings_to_apply = current_settings
+                if settings[1]:
+                    # Need to reset previous before applying new settings
+                    settings_to_apply = ['0'] + current_settings
+                # Apply these settings
+                out_str += '\x1b[{}m'.format(';'.join([str(s) for s in settings_to_apply]))
+            else:
+                # Clear settings
+                out_str += '\x1b[m'
+
+        # Final catch up
+        out_str += self._s[last_idx:]
+        if current_settings:
+            # Clear settings
+            out_str += '\x1b[m'
+
+        self._cached_output = out_str
+        return out_str
 
 def _parse_args(cliargs):
     parser = argparse.ArgumentParser('Partially implements grep command entirely in Python.')
@@ -104,6 +303,10 @@ def _parse_args(cliargs):
     # output_ctrl_grp.add_argument('-c', '--count', action='store_true', help='print only a count of selected lines per FILE')
     # output_ctrl_grp.add_argument('-T', '--initial-tab', action='store_true', help='make tabs line up (if needed)')
     # output_ctrl_grp.add_argument('-Z', '--null', action='store_true', help='print 0 byte after FILE name')
+    output_ctrl_grp.add_argument('--result-sep', type=str, metavar='SEP', default=':',
+                                 help='String to place between header info and and search output')
+    output_ctrl_grp.add_argument('--name-num-sep', type=str, metavar='SEP', default=':',
+                                 help='String to place between file name and line number when both are enabled')
 
     context_ctrl_grp = parser.add_argument_group('Context control')
     # context_ctrl_grp.add_argument('-B, --before-context=NUM', action='store_true', help='print NUM lines of leading context')
