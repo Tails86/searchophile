@@ -10,21 +10,21 @@ Examples:
 This will search all files under the pwd for the string "the quick brown fox" and display
 equivalent find/grep command with results to stdout.
 Output:
-find . -type f | xargs grep --color=always -HF 'the quick brown fox'
+find . -type f -exec grep --color=auto -HF 'the quick brown fox' {} \;
 (grep search results shown here)
 
 > search.py 'hi mom' --name '*.py' -in
 This will search all python files under the pwd for the string "hi mom", ignoring case and display
 line number.
 Output:
-find . -type f -name '*.py' | xargs grep --color=always -HinF 'hi mom'
+find . -type f -name '*.py' -exec grep --color=always -HinF 'hi mom' {} \;
 (grep search results shown here)
 
 > search.py coordinates[2] --regexwholename '^.*\.\(h\|hpp\|c\|cpp\)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
 Output:
-find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs grep --color=always -HF 'coordinates[2]'
+find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed -exec grep --color=always -HF 'coordinates[2]' {} \;
 (grep search results shown here)
 Would you like to continue? (y/n): y
 find . -type f -regex '^.*\.\(h\|hpp\|c\|cpp\)$' -regextype sed | xargs sed -i 's=coordinates\[2\]=coordinate_z=g'
@@ -140,8 +140,8 @@ def _parse_args(cliargs):
                             help='Root directory in which to search (default: cwd)')
     find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+',
                             default=[], help='File name globs used to narrow search')
-    find_group.add_argument('-w', '--wholename', '--wholeName', dest='whole_names', type=str,
-                            action=extend_action, nargs='+', default=[],
+    find_group.add_argument('-w', '--wholename', '--wholeName', '--path', dest='whole_names',
+                            type=str, action=extend_action, nargs='+', default=[],
                             help='Relative file path globs used to narrow search')
     find_group.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
                             action=extend_action, nargs='+', default=[],
@@ -258,12 +258,7 @@ def _build_grep_command(args, for_printout):
     regex = args.regex
     search_string = args.search_string or args.search_string_opt
     if args.whole_word:
-        if not regex:
-            # Force regex search and escape regex search special characters
-            regex = True
-            search_string = _escape_chars(search_string, '\\^$.*?[]', '\\')
-        NON_ALPHA_NUMERIC = '[^a-zA-Z0-9\d]'
-        search_string = '(^|{0}){1}($|{0})'.format(NON_ALPHA_NUMERIC, search_string)
+        grep_other_options += 'w'
     if regex:
         grep_other_options += 'E' # For grep "extended regex"
     else:
