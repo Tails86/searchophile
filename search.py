@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 '''
 This executable module is a wrapper for find, grep, and sed. It facilitates search and replace
@@ -48,6 +48,7 @@ import threading
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
 THIS_SCRIPT_DIR = os.path.dirname(THIS_SCRIPT_PATH)
 FIND_CMD = 'find'
+GREP_CMD = 'grep'
 
 def _item_needs_quotes(item):
     '''
@@ -106,6 +107,7 @@ def _parse_args(cliargs):
     Returns: A structure which contains all of the parsed arguments.
     '''
     find_cmd_available = _which(FIND_CMD) is not None
+    grep_cmd_available = _which(GREP_CMD) is not None
     extend_action = 'extend'
     version_dec = sys.version_info.major + (sys.version_info.minor / 10.0)
     if version_dec < 3.8:
@@ -165,10 +167,24 @@ def _parse_args(cliargs):
     other_group.add_argument('--internalFind', dest='use_internal_find', action='store_true',
                              default=(not find_cmd_available),
                         help='Use internal find as opposed to system command')
+    other_group.add_argument('--internalGrep', dest='use_internal_grep', action='store_true',
+                             default=(not grep_cmd_available),
+                        help='Use internal grep as opposed to system command')
+    other_group.add_argument('--internalCommands', dest='use_internal_commands', action='store_true',
+                             default=False, help='Use all internal commands')
     other_group.add_argument('--dryRun', '--dryrun', dest='dry_run', action='store_true',
                         help='Print equivalent find/grep/sed commands and exit.')
 
-    return parser.parse_args(cliargs)
+    args = parser.parse_args(cliargs)
+
+    if args.use_internal_commands:
+        args.use_internal_find = True
+        args.use_internal_grep = True
+
+    if args.use_internal_grep:
+        print('WARNING: internal grep is not completely implemented yet')
+
+    return args
 
 def _build_find_command(args):
     '''
@@ -233,7 +249,10 @@ def _build_grep_command(args, for_printout):
     Returns: The grep command list.
     '''
     # Build the grep command to search in the above files
-    grep_command = ['grep']
+    if not args.use_internal_grep:
+        grep_command = [GREP_CMD]
+    else:
+        grep_command = [sys.executable, os.path.join(THIS_SCRIPT_DIR, 'grep.py')]
     if args.show_color:
         grep_color_option = '--color=always'
     elif args.no_color:

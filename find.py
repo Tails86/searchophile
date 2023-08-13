@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import os
 import sys
@@ -694,7 +694,7 @@ class FinderArgParser:
 
     @staticmethod
     def _print_help():
-        print('''Partially implements find command in Python.
+        print('''Partially implements find command entirely in Python.
 
     Usage: find.py [path...] [expression...]
 
