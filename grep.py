@@ -425,7 +425,16 @@ def main(cliargs):
                     if isinstance(grep_color_dict[key_val[0]], bool):
                         grep_color_dict[key_val[0]] = key_val[1].lower() in ['1', 't', 'true', 'on']
                     else:
-                        grep_color_dict[key_val[0]] = key_val[1]
+                        # The string must be integers separated by semicolon
+                        is_valid = True
+                        for item in key_val[1].split(';'):
+                            try:
+                                _ = int(item)
+                            except ValueError:
+                                is_valid = False
+                        if is_valid:
+                            grep_color_dict[key_val[0]] = key_val[1]
+                        # else: value is ignored
 
         matching_color = grep_color_dict['mt']
         if matching_color is None:
