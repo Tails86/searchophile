@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import argparse
 from enum import Enum
@@ -16,7 +17,10 @@ class AutoInputFileIterable:
         return self._fp.__iter__()
 
     def __next__(self):
-        return self._fp.__next__()
+        if self._fp:
+            return self._fp.__next__()
+        else:
+            raise StopIteration
 
     def name(self):
         return self._file_path
@@ -39,6 +43,7 @@ class AnsiFormat(Enum):
     BOLD='1'
     FAINT='2'
     ITALIC='3'
+    ITALICS=ITALIC # Alias
     UNDERLINE='4'
     SLOW_BLINK='5'
     RAPID_BLINK='6'
@@ -114,13 +119,39 @@ class AnsiString:
     s = AnsiString('This string contains custom formatting', '38;2;175;95;95')
     print(s)
 
-    Example 2:
-    s = AnsiString('This string contains multiple color settings')
+    Example 3:
+    s = AnsiString('This string contains multiple color settings across different ranges')
     s.apply_formatting(AnsiFormat.BOLD, 5, 6)
     s.apply_formatting(AnsiFormat.BG_BLUE, 21, 8)
     s.apply_formatting([AnsiFormat.FG_ORANGE, AnsiFormat.ITALIC], 21, 14)
     print(s)
+
+    Example 4:
+    s = AnsiString('This string will be formatted bold and red')
+    print('{:01;31}'.format(s))
+
+    Example 5:
+    s = AnsiString('This string will be formatted bold and red')
+    # Use any name within AnsiFormat (can be lower or upper case representation of the name)
+    print('{:bold;fg_red}'.format(s))
+
+    Example 6:
+    s = AnsiString('This string will be formatted bold and red')
+    # The character '[' tells the format method to do no parsing/checking and use verbatim as codes
+    print('{:[01;31}'.format(s))
     '''
+
+    # The escape sequence that needs to be formatted with command str
+    ANSI_ESCAPE_FORMAT = '\x1b[{}m'
+    # The escape sequence which will clear all previous formatting (empty command is same as 0)
+    ANSI_ESCAPE_CLEAR = ANSI_ESCAPE_FORMAT.format('')
+
+    # Number of elements in each value of _color_settings dict
+    SETTINGS_ITEM_LIST_LEN = 2
+    # Index of _color_settings value list which contains settings to apply
+    SETTINGS_APPLY_IDX = 0
+    # Index of _color_settings value list which contains settings to remove
+    SETTINGS_REMOVE_IDX = 1
 
     class Settings:
         '''
@@ -132,13 +163,13 @@ class AnsiString:
             else:
                 settings = setting_or_settings
 
-            for i in range(len(settings)):
-                if isinstance(settings[i], str):
+            for i, item in enumerate(settings):
+                if isinstance(item, str):
                     # Use string verbatim
                     pass
-                elif hasattr(settings[i], 'value') and isinstance(settings[i].value, str):
+                elif hasattr(item, 'value') and isinstance(item.value, str):
                     # Likely an enumeration - use the value
-                    settings[i] = settings[i].value
+                    settings[i] = item.value
                 else:
                     raise TypeError('Unsupported type for setting_or_settings: {}'.format(type(setting_or_settings)))
 
@@ -156,18 +187,19 @@ class AnsiString:
         self._color_settings = {}
         if setting_or_settings:
             self.apply_formatting(setting_or_settings)
-        # Cached output is used to optimize frequent calls to str()
-        self._cached_output = None
 
     def assign_str(self, s):
-        self._cached_output = None
         self._s = s
 
-    def _insert_settings(self, idx, apply, settings_str):
-        self._cached_output = None
-        if idx not in self._color_settings:
-            self._color_settings[idx] = [[],[]]
-        self._color_settings[idx][0 if apply else 1].append(settings_str)
+    @staticmethod
+    def _insert_settings_to_dict(settings_dict, idx, apply, settings):
+        if idx not in settings_dict:
+            settings_dict[idx] = [[] for _ in range(__class__.SETTINGS_ITEM_LIST_LEN)]
+        list_idx = __class__.SETTINGS_APPLY_IDX if apply else __class__.SETTINGS_REMOVE_IDX
+        settings_dict[idx][list_idx].append(settings)
+
+    def _insert_settings(self, idx, apply, settings):
+        __class__._insert_settings_to_dict(self._color_settings, idx, apply, settings)
 
     def apply_formatting(self, setting_or_settings, start_idx=0, length=None):
         '''
@@ -189,49 +221,99 @@ class AnsiString:
             # Remove settings
             self._insert_settings(start_idx + length, False, settings)
 
+    def clear_formatting(self):
+        self._color_settings = {}
+
     def __str__(self):
-        if self._cached_output is not None:
-            return self._cached_output
+        return self.__format__(None)
+
+    def __format__(self, __format_spec):
+        if not __format_spec and not self._color_settings:
+            # No formatting
+            return self._s
 
         out_str = ''
         current_settings = []
         last_idx = 0
 
-        for idx in sorted(self._color_settings):
+        settings_dict = self._color_settings
+        if __format_spec:
+            # Make a local copy and add this temporary format spec
+            settings_dict = dict(self._color_settings)
+
+            if __format_spec.startswith("["):
+                # Use the rest of the string as-is for settings
+                format_settings = __class__.Settings(__format_spec[1:])
+            else:
+                # The format string contains names within AnsiFormat or integers, separated by semicolon
+                formats = __format_spec.split(';')
+                format_settings_strs = []
+                for format in formats:
+                    try:
+                        ansi_format = AnsiFormat[format.upper()]
+                    except KeyError:
+                        try:
+                            _ = int(format)
+                        except ValueError:
+                            raise ValueError(
+                                'AnsiString.__format__ failed to parse format ({}); invalid name: {}'
+                                .format(__format_spec, format)
+                            )
+                        else:
+                            # Value is an integer - use the format verbatim
+                            format_settings_strs.append(format)
+                    else:
+                        format_settings_strs.append(ansi_format.value)
+                format_settings = __class__.Settings(';'.join(format_settings_strs))
+
+            __class__._insert_settings_to_dict(settings_dict, 0, True, format_settings)
+
+        for idx in sorted(settings_dict):
             if idx >= len(self._s):
                 # Invalid
                 break
-            settings = self._color_settings[idx]
+            settings = settings_dict[idx]
             # Catch up output to current index
             out_str += self._s[last_idx:idx]
             last_idx = idx
             # Remove settings that it is time to remove
-            for setting in settings[1]:
+            for setting in settings[__class__.SETTINGS_REMOVE_IDX]:
                 # setting object will only be matched and removed if it is the same reference to one
                 # previously added - will raise exception otherwise which should not happen if the
                 # settings dictionary and this method were setup correctly.
                 current_settings.remove(setting)
             # Apply settings that it is time to add
-            current_settings += settings[0]
-            if current_settings:
-                settings_to_apply = current_settings
-                if settings[1]:
-                    # Need to reset previous before applying new settings
-                    settings_to_apply = ['0'] + current_settings
-                # Apply these settings
-                out_str += '\x1b[{}m'.format(';'.join([str(s) for s in settings_to_apply]))
-            else:
-                # Clear settings
-                out_str += '\x1b[m'
+            current_settings += settings[__class__.SETTINGS_APPLY_IDX]
+
+            settings_to_apply = [str(s) for s in current_settings]
+            if settings[__class__.SETTINGS_REMOVE_IDX] and settings_to_apply:
+                # Settings were removed and there are settings to be applied -
+                # need to reset before applying current settings
+                settings_to_apply = [AnsiFormat.RESET.value] + settings_to_apply
+            # Apply these settings
+            out_str += __class__.ANSI_ESCAPE_FORMAT.format(';'.join(settings_to_apply))
 
         # Final catch up
         out_str += self._s[last_idx:]
         if current_settings:
             # Clear settings
-            out_str += '\x1b[m'
+            out_str += __class__.ANSI_ESCAPE_CLEAR
 
-        self._cached_output = out_str
         return out_str
+
+DEFAULT_GREP_ANSI_COLORS = {
+    'mt':None,
+    'ms':'01;31',
+    'mc':'01;31',
+    'sl':'',
+    'cx':'',
+    'rv':False,
+    'fn':'35',
+    'ln':'32',
+    'bn':'32',
+    'se':'36',
+    'ne':False
+}
 
 def _parse_args(cliargs):
     parser = argparse.ArgumentParser('Partially implements grep command entirely in Python.')
@@ -252,8 +334,8 @@ def _parse_args(cliargs):
     #                            help='use PATTERNS for matching')
     # pattern_group.add_argument('-f', '--file', type=str, default=None,
     #                            help='take PATTERNS from FILE')
-    # pattern_group.add_argument('-i', '--ignore-case', action='store_true',
-    #                            help='ignore case distinctions in patterns and data')
+    pattern_group.add_argument('-i', '--ignore-case', action='store_true',
+                               help='ignore case distinctions in patterns and data')
     # pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
     #                            help='do not ignore case distinctions (default)')
     # pattern_group.add_argument('-w', '--word-regexp', action='store_true',
@@ -274,7 +356,7 @@ def _parse_args(cliargs):
     # output_ctrl_grp.add_argument('-b', '--byte-offset', action='store_true',
     #                              help='print the byte offset with output lines')
 
-    # output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with output lines')
+    output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with output lines')
     # output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
     output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with output lines')
     # output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
@@ -303,7 +385,7 @@ def _parse_args(cliargs):
     # output_ctrl_grp.add_argument('-c', '--count', action='store_true', help='print only a count of selected lines per FILE')
     # output_ctrl_grp.add_argument('-T', '--initial-tab', action='store_true', help='make tabs line up (if needed)')
     # output_ctrl_grp.add_argument('-Z', '--null', action='store_true', help='print 0 byte after FILE name')
-    output_ctrl_grp.add_argument('--result-sep', type=str, metavar='SEP', default=':',
+    output_ctrl_grp.add_argument('--result-sep', type=str, metavar='SEP', default=': ',
                                  help='String to place between header info and and search output')
     output_ctrl_grp.add_argument('--name-num-sep', type=str, metavar='SEP', default=':',
                                  help='String to place between file name and line number when both are enabled')
@@ -312,7 +394,7 @@ def _parse_args(cliargs):
     # context_ctrl_grp.add_argument('-B, --before-context=NUM', action='store_true', help='print NUM lines of leading context')
     # context_ctrl_grp.add_argument('-A, --after-context=NUM', action='store_true', help='print NUM lines of trailing context')
     # context_ctrl_grp.add_argument('-C, --context=NUM', action='store_true', help='print NUM lines of output context')
-    context_ctrl_grp.add_argument('--color', '--colour', type=str, metavar='WHEN', nargs='?', default='auto',
+    context_ctrl_grp.add_argument('--color', '--colour', type=str, metavar='WHEN', nargs='?', default='never', dest='color',
                                   choices=['always', 'never', 'auto'],
                                   help='use markers to highlight the matching strings;\n'
                                   'WHEN is \'always\', \'never\', or \'auto\'')
@@ -327,6 +409,39 @@ def main(cliargs):
         print('No patterns provided')
         return 1
 
+    color_enabled = False
+    if args.color == 'always':
+        color_enabled = True
+    elif args.color == 'auto':
+        color_enabled = sys.stdout.isatty()
+
+    if color_enabled:
+        grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
+        if 'GREP_COLORS' in os.environ:
+            colors = os.environ['GREP_COLORS'].split(':')
+            for color in colors:
+                key_val = color.split('=', maxsplit=1)
+                if len(key_val) == 2 and key_val[0] in grep_color_dict:
+                    if isinstance(grep_color_dict[key_val[0]], bool):
+                        grep_color_dict[key_val[0]] = key_val[1].lower() in ['1', 't', 'true', 'on']
+                    else:
+                        grep_color_dict[key_val[0]] = key_val[1]
+
+        matching_color = grep_color_dict['mt']
+        if matching_color is None:
+            # TODO: add when invert_match is supported
+            # if args.invert_match:
+            #     matching_color = grep_color_dict['mc']
+            # else:
+            matching_color = grep_color_dict['ms']
+
+    if color_enabled and grep_color_dict['se']:
+        name_num_sep = str(AnsiString(args.name_num_sep, grep_color_dict['se']))
+        result_sep = str(AnsiString(args.result_sep, grep_color_dict['se']))
+    else:
+        name_num_sep = args.name_num_sep
+        result_sep = args.result_sep
+
     files = []
     if not args.file:
         files += [StdinIterable()]
@@ -335,19 +450,50 @@ def main(cliargs):
 
     patterns = args.patterns.split('\n')
 
-    for file in files:
-        for line in file:
-            if line.endswith('\n'):
-                end = ''
-            else:
-                end = '\n'
-            for pattern in patterns:
-                if pattern in line:
-                    if args.with_filename:
-                        print('{}: '.format(file.name()), end='')
-                    print(line, end=end)
-                    break
+    format = ''
+    if args.with_filename:
+        format += '{filename'
+        if color_enabled and grep_color_dict['fn']:
+            format += ':[' + grep_color_dict['fn']
+        format += '}' + (name_num_sep if args.line_number else result_sep)
+    if args.line_number:
+        format += '{num'
+        if color_enabled and grep_color_dict['ln']:
+            format += ':[' + grep_color_dict['ln']
+        format += '}' + result_sep
+    format += '{line}'
 
+    for file in files:
+        d = {'filename': AnsiString(file.name())}
+        try:
+            for i, line in enumerate(file):
+                formatted_line = AnsiString(line)
+                if args.ignore_case:
+                    line = line.lower()
+                print_line = False
+                for pattern in patterns:
+                    if args.ignore_case:
+                        pattern = pattern.lower()
+                    if pattern in line:
+                        print_line = True
+                        if color_enabled:
+                            loc = line.find(pattern)
+                            while loc >= 0:
+                                formatted_line.apply_formatting(matching_color, loc, len(pattern))
+                                loc = line.find(pattern, loc + len(pattern))
+                        else:
+                            # No need to keep searching
+                            break
+                if print_line:
+                    if line.endswith('\n'):
+                        end = ''
+                    else:
+                        end = '\n'
+                    d.update({'num': AnsiString(str(i+1)), 'line': formatted_line})
+                    print(format.format(**d), end=end)
+        except UnicodeDecodeError:
+            # TODO: real grep parses binary and prints message if binary matches
+            pass
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

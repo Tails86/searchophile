@@ -282,6 +282,9 @@ def _build_grep_command(args, for_printout):
         grep_other_options += 'E' # For grep "extended regex"
     else:
         grep_other_options += 'F' # Default to string search
+    if args.use_internal_grep and not args.no_grep_tweaks:
+        # Internal grep can handle colon separation tweak natively
+        grep_command += ['--result-sep= : ']
     grep_command += [grep_color_option, grep_other_options, search_string]
     return grep_command
 
@@ -372,11 +375,11 @@ def main(cliargs):
             # Execute grep on those files and print result to stdout in realtime
             grep_process = subprocess.Popen(
                 grep_command + file_list,
-                stdout=(subprocess.PIPE if not args.no_grep_tweaks else None),
+                stdout=(subprocess.PIPE if not args.no_grep_tweaks and not args.use_internal_grep else None),
                 stderr=subprocess.PIPE) # purposely ignoring
 
             print_thread = None
-            if not args.no_grep_tweaks:
+            if not args.no_grep_tweaks and not args.use_internal_grep:
                 # A separate thread is needed because stdin.write() blocks
                 print_thread = threading.Thread(
                     target=grep_print_thread_fn,
