@@ -185,7 +185,7 @@ def _parse_args(cliargs):
 
     return args
 
-def _build_find_command(args):
+def _build_find_command(args, for_printout):
     '''
     Builds the find with the given arguments.
     Inputs: args - The parser argument structure.
@@ -197,7 +197,11 @@ def _build_find_command(args):
     if not args.use_internal_find:
         find_command = [FIND_CMD]
     else:
-        find_command = [sys.executable, os.path.join(THIS_SCRIPT_DIR, 'find.py')]
+        if for_printout:
+            grep_command = [os.path.basename(sys.executable)]
+        else:
+            grep_command = [sys.executable]
+        grep_command += [os.path.join(THIS_SCRIPT_DIR, 'find.py')]
     # Build the find command to filter only the files we want
     find_command += [find_dir, '-type', 'f']
     name_options = []
@@ -251,7 +255,11 @@ def _build_grep_command(args, for_printout):
     if not args.use_internal_grep:
         grep_command = [GREP_CMD]
     else:
-        grep_command = [sys.executable, os.path.join(THIS_SCRIPT_DIR, 'grep.py')]
+        if for_printout:
+            grep_command = [os.path.basename(sys.executable)]
+        else:
+            grep_command = [sys.executable]
+        grep_command += [os.path.join(THIS_SCRIPT_DIR, 'grep.py')]
     if args.show_color:
         grep_color_option = '--color=always'
     elif args.no_color:
@@ -355,19 +363,16 @@ def main(cliargs):
              2 if invalid entry provided
     '''
     args = _parse_args(cliargs)
-    find_command = _build_find_command(args)
+    find_command = _build_find_command(args, False)
     grep_command = _build_grep_command(args, False)
     # If not silent, print the approximate CLI equivalent of what is about to be done
     if not args.silent:
         cmd_to_print = (
-            _quotify_command(find_command) +
+            _quotify_command(_build_find_command(args, True)) +
             ['-exec'] +
             _quotify_command(_build_grep_command(args, True)) +
             ['{}', '\';\'']
         )
-        # Replace full path to python with "python" if found in list
-        cmd_to_print = [x if x != sys.executable else os.path.basename(sys.executable)
-                        for x in cmd_to_print]
         _print_command(cmd_to_print)
     if not args.dry_run:
         if args.show_errors:
@@ -379,7 +384,7 @@ def main(cliargs):
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=stderr)
         find_output, _ = find_process.communicate()
         file_list = [x for x in find_output.decode().split(os.linesep) if x != '']
-        if not args.replace_string or not args.silent:
+        if not args.replace_string or not args.silent and file_list:
             # Execute grep on those files and print result to stdout in realtime
             grep_process = subprocess.Popen(
                 grep_command + file_list,
@@ -405,16 +410,19 @@ def main(cliargs):
         # about to be done
         if not args.silent:
             if not args.dry_run:
-                input_str = input('Would you like to continue? (y/n): ')
-                if input_str.lower() == 'n' or input_str.lower() == 'no':
-                    print('Cancelled')
-                    return 1
-                elif input_str.lower() != 'y' and input_str.lower() != 'yes':
-                    print('Invalid entry: {}'.format(input_str))
-                    return 2
+                if file_list:
+                    input_str = input('Would you like to continue? (y/n): ')
+                    if input_str.lower() == 'n' or input_str.lower() == 'no':
+                        print('Cancelled')
+                        return 1
+                    elif input_str.lower() != 'y' and input_str.lower() != 'yes':
+                        print('Invalid entry: {}'.format(input_str))
+                        return 2
+                else:
+                    print('No matches found')
                 # Continue otherwise
             _print_command(_quotify_command(find_command) + ['|'] + _quotify_command(replace_command))
-        if not args.dry_run:
+        if not args.dry_run and file_list:
             # Execute the sed command to do the replace
             replace_process = subprocess.Popen(replace_command, stdin=subprocess.PIPE)
             replace_process.communicate(input=find_output)
