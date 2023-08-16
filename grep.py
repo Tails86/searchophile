@@ -4,6 +4,7 @@ import os
 import sys
 import argparse
 from enum import Enum
+import re
 
 class AutoInputFileIterable:
     def __init__(self, file_path, file_mode='r', newline_str=None):
@@ -315,6 +316,16 @@ DEFAULT_GREP_ANSI_COLORS = {
     'ne':False
 }
 
+def _pattern_escape_invert(pattern, chars):
+    for char in chars:
+        escaped_char = '\\' + char
+        pattern_split = pattern.split(escaped_char)
+        new_pattern_split = []
+        for piece in pattern_split:
+            new_pattern_split.append(piece.replace(char, escaped_char))
+        pattern = char.join(new_pattern_split)
+    return pattern
+
 def _parse_args(cliargs):
     parser = argparse.ArgumentParser('Partially implements grep command entirely in Python.')
 
@@ -324,12 +335,13 @@ def _parse_args(cliargs):
                         help='Files to search; will search from stdin if none specified')
 
     pattern_group = parser.add_argument_group('Pattern selection and interpretation')
-    # pattern_group.add_argument('-E', '--extended-regexp', action='store_true',
-    #                            help='PATTERNS are extended regular expressions')
-    pattern_group.add_argument('-F', '--fixed-strings', action='store_true',
+    pattern_type = pattern_group.add_mutually_exclusive_group()
+    pattern_type.add_argument('-E', '--extended-regexp', action='store_true',
+                               help='PATTERNS are extended regular expressions')
+    pattern_type.add_argument('-F', '--fixed-strings', action='store_true',
                                help='PATTERNS are strings')
-    # pattern_group.add_argument('-G', '--basic-regexp', action='store_true',
-    #                            help='PATTERNS are basic regular expressions')
+    pattern_type.add_argument('-G', '--basic-regexp', action='store_true',
+                               help='PATTERNS are basic regular expressions')
     # pattern_group.add_argument('-e', '--regexp', dest='patterns', type=str, default=None,
     #                            help='use PATTERNS for matching')
     # pattern_group.add_argument('-f', '--file', type=str, default=None,
@@ -400,7 +412,13 @@ def _parse_args(cliargs):
                                   'WHEN is \'always\', \'never\', or \'auto\'')
     # context_ctrl_grp.add_argument('-U', '--binary', action='store_true', help='do not strip CR characters at EOL (MSDOS/Windows)')
 
-    return parser.parse_args(cliargs)
+    args = parser.parse_args(cliargs)
+
+    # Basic regex is default if no type specified
+    if not args.extended_regexp and not args.fixed_strings:
+        args.basic_regexp = True
+
+    return args
 
 def main(cliargs):
     args = _parse_args(cliargs)
@@ -483,15 +501,33 @@ def main(cliargs):
                 for pattern in patterns:
                     if args.ignore_case:
                         pattern = pattern.lower()
-                    if pattern in line:
-                        print_line = True
-                        if color_enabled:
-                            loc = line.find(pattern)
-                            while loc >= 0:
-                                formatted_line.apply_formatting(matching_color, loc, len(pattern))
-                                loc = line.find(pattern, loc + len(pattern))
-                        else:
-                            # No need to keep searching
+                    if args.fixed_strings:
+                        loc = line.find(pattern)
+                        if loc >= 0:
+                            print_line = True
+                            if color_enabled:
+                                while loc >= 0:
+                                    formatted_line.apply_formatting(matching_color, loc, len(pattern))
+                                    loc = line.find(pattern, loc + len(pattern))
+                            else:
+                                # No need to keep going through each pattern
+                                break
+                    else:
+                        if args.basic_regexp:
+                            # The only difference with basic is that escaping of some characters is inverted
+                            pattern = _pattern_escape_invert(pattern, '?+{}|()')
+                        # From here, re can be used for either basic or extended
+                        for m in re.finditer(pattern, line):
+                            print_line = True
+                            if color_enabled:
+                                    s = m.start(0)
+                                    e = m.end(0)
+                                    formatted_line.apply_formatting(matching_color, s, e - s)
+                            else:
+                                # No need to keep iterating
+                                break
+                        if print_line and not color_enabled:
+                            # No need to keep going through each pattern
                             break
                 if print_line:
                     if line.endswith('\n'):
