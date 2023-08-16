@@ -6,6 +6,8 @@ import argparse
 from enum import Enum
 import re
 
+THIS_FILE_NAME = os.path.basename(__file__)
+
 class AutoInputFileIterable:
     def __init__(self, file_path, file_mode='r', newline_str=None):
         self._file_path = file_path
@@ -222,6 +224,14 @@ class AnsiString:
             # Remove settings
             self._insert_settings(start_idx + length, False, settings)
 
+    def apply_formatting_for_match(self, setting_or_settings, match_object, group=0):
+        '''
+        Apply formatting using a match object generated from re
+        '''
+        s = match_object.start(group)
+        e = match_object.end(group)
+        self.apply_formatting(setting_or_settings, s, e - s)
+
     def clear_formatting(self):
         self._color_settings = {}
 
@@ -326,11 +336,17 @@ def _pattern_escape_invert(pattern, chars):
         pattern = char.join(new_pattern_split)
     return pattern
 
-def _parse_args(cliargs):
-    parser = argparse.ArgumentParser('Partially implements grep command entirely in Python.')
+def _parse_patterns(patterns):
+    # Split for both \r\n and \n
+    return [y for x in patterns.split('\r\n') for y in x.split('\n')]
 
-    parser.add_argument('patterns', type=str, default=None,
-                        help='Pattern(s) to search for; can contain multiple patterns separated by newlines.')
+
+def _parse_args(cliargs):
+    parser = argparse.ArgumentParser(description='Partially implements grep command entirely in Python.')
+
+    parser.add_argument('patterns_positional', type=str, nargs='?', default=None, metavar='PATTERNS',
+                        help='Pattern(s) to search for; can contain multiple patterns separated by newlines. '
+                        'This is required if --regexp or --file are not specified.')
     parser.add_argument('file', type=str, nargs='*', default=[],
                         help='Files to search; will search from stdin if none specified')
 
@@ -342,23 +358,24 @@ def _parse_args(cliargs):
                                help='PATTERNS are strings')
     pattern_type.add_argument('-G', '--basic-regexp', action='store_true',
                                help='PATTERNS are basic regular expressions')
-    # pattern_group.add_argument('-e', '--regexp', dest='patterns', type=str, default=None,
-    #                            help='use PATTERNS for matching')
-    # pattern_group.add_argument('-f', '--file', type=str, default=None,
-    #                            help='take PATTERNS from FILE')
+    pattern_group.add_argument('-e', '--regexp', dest='patterns_option', metavar='PATTERNS', type=str,
+                               default=None,
+                               help='use PATTERNS for matching')
+    pattern_group.add_argument('-f', '--file', metavar='FILE', dest='patterns_file', type=str, default=None,
+                               help='take PATTERNS from FILE')
     pattern_group.add_argument('-i', '--ignore-case', action='store_true',
                                help='ignore case distinctions in patterns and data')
     pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
                                help='do not ignore case distinctions (default)')
     pattern_group.add_argument('-w', '--word-regexp', action='store_true',
                                help='match only whole words')
-    # pattern_group.add_argument('-x', '--line-regexp', action='store_true',
-    #                            help='match only whole lines')
+    pattern_group.add_argument('-x', '--line-regexp', action='store_true',
+                               help='match only whole lines')
     # pattern_group.add_argument('-z', '--null-data', action='store_true',
     #                            help='a data line ends in 0 byte, not newline')
 
-    # misc_group = parser.add_argument_group('Miscellaneous')
-    # misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
+    misc_group = parser.add_argument_group('Miscellaneous')
+    misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
     # misc_group.add_argument('-v', '--invert-match', action='store_true', help='select non-matching lines')
     # misc_group.add_argument('-V', '--version', action='store_true', help='display version information and exit')
 
@@ -406,7 +423,7 @@ def _parse_args(cliargs):
     # context_ctrl_grp.add_argument('-B, --before-context=NUM', action='store_true', help='print NUM lines of leading context')
     # context_ctrl_grp.add_argument('-A, --after-context=NUM', action='store_true', help='print NUM lines of trailing context')
     # context_ctrl_grp.add_argument('-C, --context=NUM', action='store_true', help='print NUM lines of output context')
-    context_ctrl_grp.add_argument('--color', '--colour', type=str, metavar='WHEN', nargs='?', default='never', dest='color',
+    context_ctrl_grp.add_argument('--color', '--colour', type=str, metavar='WHEN', nargs='?', default='auto', dest='color',
                                   choices=['always', 'never', 'auto'],
                                   help='use markers to highlight the matching strings;\n'
                                   'WHEN is \'always\', \'never\', or \'auto\'')
@@ -414,11 +431,57 @@ def _parse_args(cliargs):
 
     args = parser.parse_args(cliargs)
 
+    # Pars patterns from all of the different options into a single list of patterns
+    args.patterns = []
+    if args.patterns_option is not None:
+        # Set patterns to the option
+        args.patterns.extend(_parse_patterns(args.patterns_option))
+        # The first positional (patterns_positional) is a file
+        args.file.insert(0, args.patterns_positional)
+    elif args.patterns_positional is not None:
+        # Set patterns to the positional
+        args.patterns.extend(_parse_patterns(args.patterns_positional))
+
+    if args.patterns_file is not None:
+        if not os.path.isfile(args.patterns_file):
+            print('Error: {} is not a file'.format(args.patterns_file))
+            sys.exit(1)
+        with open(args.patterns_file, 'r') as fp:
+            args.patterns.extend(_parse_patterns(fp.read()))
+
+    if not args.patterns:
+        parser.print_usage()
+        print('Try --help for more information')
+        sys.exit(1)
+
     # Basic regex is default if no type specified
     if not args.extended_regexp and not args.fixed_strings:
         args.basic_regexp = True
 
     return args
+
+def _generate_color_dict():
+    grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
+    if 'GREP_COLORS' in os.environ:
+        colors = os.environ['GREP_COLORS'].split(':')
+        for color in colors:
+            key_val = color.split('=', maxsplit=1)
+            if len(key_val) == 2 and key_val[0] in grep_color_dict:
+                if isinstance(grep_color_dict[key_val[0]], bool):
+                    grep_color_dict[key_val[0]] = key_val[1].lower() in ['1', 't', 'true', 'on']
+                else:
+                    # The string must be integers separated by semicolon
+                    is_valid = True
+                    for item in key_val[1].split(';'):
+                        try:
+                            _ = int(item)
+                        except ValueError:
+                            is_valid = False
+                    if is_valid:
+                        grep_color_dict[key_val[0]] = key_val[1]
+                    # else: value is ignored
+
+    return grep_color_dict
 
 def main(cliargs):
     args = _parse_args(cliargs)
@@ -434,26 +497,7 @@ def main(cliargs):
         color_enabled = sys.stdout.isatty()
 
     if color_enabled:
-        grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
-        if 'GREP_COLORS' in os.environ:
-            colors = os.environ['GREP_COLORS'].split(':')
-            for color in colors:
-                key_val = color.split('=', maxsplit=1)
-                if len(key_val) == 2 and key_val[0] in grep_color_dict:
-                    if isinstance(grep_color_dict[key_val[0]], bool):
-                        grep_color_dict[key_val[0]] = key_val[1].lower() in ['1', 't', 'true', 'on']
-                    else:
-                        # The string must be integers separated by semicolon
-                        is_valid = True
-                        for item in key_val[1].split(';'):
-                            try:
-                                _ = int(item)
-                            except ValueError:
-                                is_valid = False
-                        if is_valid:
-                            grep_color_dict[key_val[0]] = key_val[1]
-                        # else: value is ignored
-
+        grep_color_dict = _generate_color_dict()
         matching_color = grep_color_dict['mt']
         if matching_color is None:
             # TODO: add when invert_match is supported
@@ -475,7 +519,7 @@ def main(cliargs):
     else:
         files += [AutoInputFileIterable(f) for f in args.file]
 
-    patterns = args.patterns.split('\n')
+    patterns = args.patterns
 
     for i in range(len(patterns)):
         if args.fixed_strings:
@@ -492,8 +536,12 @@ def main(cliargs):
                 patterns[i] = r"\b" + re.escape(patterns[i]) + r"\b"
             else:
                 patterns[i] = r"\b" + patterns[i] + r"\b"
+        elif args.line_regexp:
+            if args.fixed_strings:
+                # Transform pattern into regular expression
+                patterns[i] = re.escape(patterns[i])
 
-    if args.word_regexp or args.basic_regexp:
+    if args.word_regexp or args.basic_regexp or args.line_regexp:
         # The above made the patterns conform to extended regex expression
         args.fixed_strings = False
         args.basic_regexp = False
@@ -516,6 +564,12 @@ def main(cliargs):
         d = {'filename': AnsiString(file.name())}
         try:
             for i, line in enumerate(file):
+                if line.endswith('\n'):
+                    # Strip single \n if it is found at the end of a line
+                    line = line[:-1]
+                if line.endswith('\r'):
+                    # Strip single \r if it is found at the end of a line
+                    line = line[:-1]
                 formatted_line = AnsiString(line)
                 if args.ignore_case:
                     line = line.lower()
@@ -537,15 +591,21 @@ def main(cliargs):
                         flags = 0
                         if args.ignore_case:
                             flags = re.IGNORECASE
-                        for m in re.finditer(pattern, line, flags):
-                            print_line = True
-                            if color_enabled:
-                                    s = m.start(0)
-                                    e = m.end(0)
-                                    formatted_line.apply_formatting(matching_color, s, e - s)
-                            else:
-                                # No need to keep iterating
-                                break
+                        if args.line_regexp:
+                            m = re.fullmatch(pattern, line, flags)
+                            if m is not None:
+                                print_line = True
+                                if color_enabled:
+                                    # This is going to just format the whole line
+                                    formatted_line.apply_formatting_for_match(matching_color, m)
+                        else:
+                            for m in re.finditer(pattern, line, flags):
+                                print_line = True
+                                if color_enabled:
+                                    formatted_line.apply_formatting_for_match(matching_color, m)
+                                else:
+                                    # No need to keep iterating
+                                    break
                         if print_line and not color_enabled:
                             # No need to keep going through each pattern
                             break
@@ -559,6 +619,9 @@ def main(cliargs):
         except UnicodeDecodeError:
             # TODO: real grep parses binary and prints message if binary matches
             pass
+        except EnvironmentError as ex:
+            if not args.no_messages:
+                print('{}: {}'.format(THIS_FILE_NAME, ex), file=sys.stderr)
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
