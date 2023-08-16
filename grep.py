@@ -14,15 +14,36 @@ class AutoInputFileIterable:
         self._file_path = file_path
         self._file_mode = file_mode
         self._newline_str = newline_str
+        self._as_bytes = 'b' in file_mode
+        if self._as_bytes:
+            if isinstance(self._newline_str, str):
+                self._newline_str = self._newline_str.encode()
+            elif self._newline_str is None:
+                self._newline_str = b'\n'
         self._fp = None
 
     def __iter__(self):
-        self._fp = open(self._file_path, self._file_mode, newline=self._newline_str)
-        return self._fp.__iter__()
+        if not self._as_bytes:
+            # Return iteration object from the file (should not be calling __next__ with this)
+            self._fp = open(self._file_path, self._file_mode, newline=self._newline_str)
+            return self._fp.__iter__()
+        else:
+            # Custom iteration
+            self._fp = open(self._file_path, self._file_mode)
+            return self
 
     def __next__(self):
+        # Custom iteration
         if self._fp:
-            return self._fp.__next__()
+            b = b''
+            last_b = b' '
+            while not b.endswith(self._newline_str) and last_b:
+                last_b = self._fp.read(1)
+                b += last_b
+            if b:
+                return b
+            else:
+                raise StopIteration
         else:
             raise StopIteration
 
@@ -30,14 +51,27 @@ class AutoInputFileIterable:
         return self._file_path
 
 class StdinIterable:
-    def __init__(self):
-        pass
+    def __init__(self, as_bytes=False, end='\n'):
+        self._as_bytes = as_bytes
+        self._end = end
+        if self._as_bytes and isinstance(self._end, str):
+            self._end = self._end.encode()
 
     def __iter__(self):
-        return sys.stdin.__iter__()
+        if not self._as_bytes:
+            # Return iteration object from the file (should not be calling __next__ with this)
+            return sys.stdin.__iter__()
+        else:
+            # Custom iteration
+            return self
 
     def __next__(self):
-        return sys.stdin.__next__()
+        # Custom iteration
+        # This iteration never raises StopIteration
+        b = b''
+        while not b.endswith(self._end):
+            b += sys.stdin.buffer.read(1)
+        return b
 
     def name(self):
         return '(standard input)'
@@ -451,6 +485,7 @@ class Grep:
                                 _ = int(item)
                             except ValueError:
                                 is_valid = False
+                                break
                         if is_valid:
                             grep_color_dict[key_val[0]] = key_val[1]
                         # else: value is ignored
