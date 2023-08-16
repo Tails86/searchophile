@@ -359,12 +359,16 @@ def main(cliargs):
     grep_command = _build_grep_command(args, False)
     # If not silent, print the approximate CLI equivalent of what is about to be done
     if not args.silent:
-        _print_command(
+        cmd_to_print = (
             _quotify_command(find_command) +
             ['-exec'] +
             _quotify_command(_build_grep_command(args, True)) +
-            ['{}', '\;']
+            ['{}', '\';\'']
         )
+        # Replace full path to python with "python" if found in list
+        cmd_to_print = [x if x != sys.executable else os.path.basename(sys.executable)
+                        for x in cmd_to_print]
+        _print_command(cmd_to_print)
     if not args.dry_run:
         if args.show_errors:
             stderr = None
