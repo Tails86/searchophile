@@ -348,8 +348,8 @@ def _parse_args(cliargs):
     #                            help='take PATTERNS from FILE')
     pattern_group.add_argument('-i', '--ignore-case', action='store_true',
                                help='ignore case distinctions in patterns and data')
-    # pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
-    #                            help='do not ignore case distinctions (default)')
+    pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
+                               help='do not ignore case distinctions (default)')
     pattern_group.add_argument('-w', '--word-regexp', action='store_true',
                                help='match only whole words')
     # pattern_group.add_argument('-x', '--line-regexp', action='store_true',
