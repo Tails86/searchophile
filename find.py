@@ -132,29 +132,27 @@ class Action:
 
 class PrintAction(Action):
     ''' Simply prints the full path of the item '''
-    def __init__(self, end=None):
+    def __init__(self, end=None, file=None, flush=False):
         super().__init__()
         self._end = end
+        self._file = file
+        self._flush = flush
 
     def handle(self, path_parser):
-        if self._end is not None:
-            print(path_parser.full_path, end=self._end)
-        else:
-            print(path_parser.full_path)
+        print(path_parser.full_path, end=self._end, file=self._file, flush=self._flush)
 
 class PyPrintAction(Action):
     ''' Prints the item using python format string '''
-    def __init__(self, format, end=None):
+    def __init__(self, format, end=None, file=None, flush=False):
         super().__init__()
         self._format = format
         self._end = end
+        self._file = file
+        self._flush = flush
 
     def handle(self, path_parser):
         print_out = self._format.format(**path_parser.to_pydict())
-        if self._end is not None:
-            print(print_out, end=self._end)
-        else:
-            print(print_out)
+        print(print_out, end=self._end, file=self._file, flush=self._flush)
 
 class ExecuteAction(Action):
     ''' Executes custom command where {} is the full path to the item '''
@@ -195,12 +193,12 @@ class DeleteAction(Action):
                 try:
                     os.rmdir(path_parser.full_path)
                 except OSError as err:
-                    print(str(err))
+                    print(str(err), file=sys.stderr)
             else:
                 try:
                     os.remove(path_parser.full_path)
                 except OSError as err:
-                    print(str(err))
+                    print(str(err), file=sys.stderr)
 
 class Matcher:
     ''' Base matcher class which determines if an item is a match or not '''
@@ -1047,7 +1045,7 @@ def main(cliargs):
         finder.execute()
         return 0
     else:
-        print('Failed to parse arguments')
+        print('Failed to parse arguments', file=sys.stderr)
         return 1
 
 if __name__ == "__main__":
@@ -1057,7 +1055,7 @@ if __name__ == "__main__":
     except Exception as e:
         if '-verbose' not in cliargs:
             # Format the exception into a less verbose output
-            print('{}: {}'.format(type(e).__name__, str(e)))
+            print('{}: {}'.format(type(e).__name__, str(e)), file=sys.stderr)
         else:
             # Allow Python repl to format the exception to output
             raise e
