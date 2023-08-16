@@ -384,7 +384,7 @@ def main(cliargs):
         find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=stderr)
         find_output, _ = find_process.communicate()
         file_list = [x for x in find_output.decode().split(os.linesep) if x != '']
-        if not args.replace_string or not args.silent and file_list:
+        if (not args.replace_string or not args.silent) and file_list:
             # Execute grep on those files and print result to stdout in realtime
             grep_process = subprocess.Popen(
                 grep_command + file_list,
