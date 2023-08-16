@@ -198,10 +198,10 @@ def _build_find_command(args, for_printout):
         find_command = [FIND_CMD]
     else:
         if for_printout:
-            grep_command = [os.path.basename(sys.executable)]
+            find_command = [os.path.basename(sys.executable)]
         else:
-            grep_command = [sys.executable]
-        grep_command += [os.path.join(THIS_SCRIPT_DIR, 'find.py')]
+            find_command = [sys.executable]
+        find_command += [os.path.join(THIS_SCRIPT_DIR, 'find.py')]
     # Build the find command to filter only the files we want
     find_command += [find_dir, '-type', 'f']
     name_options = []
