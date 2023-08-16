@@ -350,8 +350,8 @@ def _parse_args(cliargs):
                                help='ignore case distinctions in patterns and data')
     # pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
     #                            help='do not ignore case distinctions (default)')
-    # pattern_group.add_argument('-w', '--word-regexp', action='store_true',
-    #                            help='match only whole words')
+    pattern_group.add_argument('-w', '--word-regexp', action='store_true',
+                               help='match only whole words')
     # pattern_group.add_argument('-x', '--line-regexp', action='store_true',
     #                            help='match only whole lines')
     # pattern_group.add_argument('-z', '--null-data', action='store_true',
@@ -477,6 +477,28 @@ def main(cliargs):
 
     patterns = args.patterns.split('\n')
 
+    for i in range(len(patterns)):
+        if args.fixed_strings:
+            if args.ignore_case:
+                patterns[i] = patterns[i].lower()
+        elif args.basic_regexp:
+            # Transform basic regex string to extended
+            # The only difference with basic is that escaping of some characters is inverted
+            patterns[i] = _pattern_escape_invert(patterns[i], '?+{}|()')
+
+        if args.word_regexp:
+            if args.fixed_strings:
+                # Transform pattern into regular expression
+                patterns[i] = r"\b" + re.escape(patterns[i]) + r"\b"
+            else:
+                patterns[i] = r"\b" + patterns[i] + r"\b"
+
+    if args.word_regexp or args.basic_regexp:
+        # The above made the patterns conform to extended regex expression
+        args.fixed_strings = False
+        args.basic_regexp = False
+        args.extended_regexp = True
+
     format = ''
     if args.with_filename:
         format += '{filename'
@@ -499,8 +521,6 @@ def main(cliargs):
                     line = line.lower()
                 print_line = False
                 for pattern in patterns:
-                    if args.ignore_case:
-                        pattern = pattern.lower()
                     if args.fixed_strings:
                         loc = line.find(pattern)
                         if loc >= 0:
@@ -513,11 +533,11 @@ def main(cliargs):
                                 # No need to keep going through each pattern
                                 break
                     else:
-                        if args.basic_regexp:
-                            # The only difference with basic is that escaping of some characters is inverted
-                            pattern = _pattern_escape_invert(pattern, '?+{}|()')
-                        # From here, re can be used for either basic or extended
-                        for m in re.finditer(pattern, line):
+                        # Regular expression matching
+                        flags = 0
+                        if args.ignore_case:
+                            flags = re.IGNORECASE
+                        for m in re.finditer(pattern, line, flags):
                             print_line = True
                             if color_enabled:
                                     s = m.start(0)

@@ -181,9 +181,6 @@ def _parse_args(cliargs):
         args.use_internal_find = True
         args.use_internal_grep = True
 
-    if args.use_internal_grep:
-        print('WARNING: internal grep is not completely implemented yet')
-
     return args
 
 def _build_find_command(args):
