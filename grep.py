@@ -9,40 +9,57 @@ import re
 
 THIS_FILE_NAME = os.path.basename(__file__)
 
-class AutoInputFileIterable:
-    def __init__(self, file_path, file_mode='r', newline_str=None):
+class FileIterable:
+    # Limit each line to 128 kB which isn't human parsable at that size anyway
+    LINE_BYTE_LIMIT = 128 * 1024
+
+class AutoInputFileIterable(FileIterable):
+    def __init__(self, file_path, file_mode='r', newline_str='\n'):
         self._file_path = file_path
         self._file_mode = file_mode
         self._newline_str = newline_str
         self._as_bytes = 'b' in file_mode
-        if self._as_bytes:
-            if isinstance(self._newline_str, str):
-                self._newline_str = self._newline_str.encode()
-            elif self._newline_str is None:
-                self._newline_str = b'\n'
+        if isinstance(self._newline_str, str):
+            self._newline_str = self._newline_str.encode()
         self._fp = None
+        if not self._as_bytes:
+            # Force reading as bytes
+            self._file_mode += 'b'
 
     def __iter__(self):
-        if not self._as_bytes:
-            # Return iteration object from the file (should not be calling __next__ with this)
-            self._fp = open(self._file_path, self._file_mode, newline=self._newline_str)
-            return self._fp.__iter__()
-        else:
-            # Custom iteration
-            self._fp = open(self._file_path, self._file_mode)
-            return self
+        # Custom iteration
+        self._fp = open(self._file_path, self._file_mode)
+        return self
 
     def __next__(self):
         # Custom iteration
         if self._fp:
             b = b''
             last_b = b' '
-            while not b.endswith(self._newline_str) and last_b:
+            end = b''
+            newline_len = len(self._newline_str)
+            while end != self._newline_str:
                 last_b = self._fp.read(1)
-                b += last_b
+                if last_b:
+                    if len(b) < __class__.LINE_BYTE_LIMIT:
+                        b += last_b
+                    # else: overflow - can be detected by checking that the line ends with newline_str
+                    end += last_b
+                    end = end[-newline_len:]
+                else:
+                    # End of file
+                    self._fp = None
+                    break
             if b:
-                return b
+                if self._as_bytes:
+                    return b
+                else:
+                    try:
+                        return b.decode()
+                    except UnicodeDecodeError:
+                        return b
             else:
+                self._fp = None
                 raise StopIteration
         else:
             raise StopIteration
@@ -50,31 +67,55 @@ class AutoInputFileIterable:
     def name(self):
         return self._file_path
 
-class StdinIterable:
+    @property
+    def eof(self):
+        return (self._fp is None)
+
+class StdinIterable(FileIterable):
     def __init__(self, as_bytes=False, end='\n'):
         self._as_bytes = as_bytes
         self._end = end
-        if self._as_bytes and isinstance(self._end, str):
+        if isinstance(self._end, str):
             self._end = self._end.encode()
+        self._eof_detected = False
 
     def __iter__(self):
-        if not self._as_bytes:
-            # Return iteration object from the file (should not be calling __next__ with this)
-            return sys.stdin.__iter__()
-        else:
-            # Custom iteration
-            return self
+        # Custom iteration
+        self._eof_detected = False
+        return self
 
     def __next__(self):
         # Custom iteration
-        # This iteration never raises StopIteration
+        if self._eof_detected:
+            raise StopIteration
         b = b''
-        while not b.endswith(self._end):
-            b += sys.stdin.buffer.read(1)
-        return b
+        end = b''
+        end_len = len(self._end)
+        while end != self._end:
+            last_b = sys.stdin.buffer.read(1)
+            if last_b:
+                if len(b) < __class__.LINE_BYTE_LIMIT:
+                    b += last_b
+                # else: overflow - can be detected by checking that the line ends with end
+                end += last_b
+                end = end[-end_len:]
+            else:
+                self._eof_detected = True
+                break
+        if self._as_bytes:
+            return b
+        else:
+            try:
+                return b.decode()
+            except UnicodeDecodeError:
+                return b
 
     def name(self):
         return '(standard input)'
+
+    @property
+    def eof(self):
+        return self._eof_detected
 
 class AnsiFormat(Enum):
     RESET='0'
@@ -228,6 +269,10 @@ class AnsiString:
 
     def assign_str(self, s):
         self._s = s
+
+    @property
+    def base_str(self):
+        return self._s
 
     @staticmethod
     def _insert_settings_to_dict(settings_dict, idx, apply, settings):
@@ -400,6 +445,7 @@ class Grep:
         self._no_messages = False
         self._output_line_numbers = False
         self._output_file_name = False
+        self._end = b'\n'
         self._results_sep = ':'
         self._name_num_sep = ':'
         self._color_output_mode = __class__.ColorOutputMode.AUTO
@@ -467,6 +513,11 @@ class Grep:
             raise TypeError('Invalid type ({}) for color_output_mode'.format(type(color_output_mode)))
         self._color_output_mode = color_output_mode
 
+    def set_end(self, end):
+        if isinstance(end, str):
+            end = end.encode()
+        self._end = end
+
     @staticmethod
     def _generate_color_dict():
         grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
@@ -492,140 +543,218 @@ class Grep:
 
         return grep_color_dict
 
-    def execute(self):
-        if not self._patterns:
-            print('No patterns provided', file=sys.stderr)
-            return 1
+    class LineParsingData:
+        def __init__(self):
+            self.files = []
+            self.line_format = ''
+            self.patterns = []
+            self.line_ending = b'\n'
+            self.ignore_case = False
+            self.fixed_string_parse = False
+            self.color_enabled = False
+            self.matching_color = None
+            self.file = None
+            self.line_data_dict = {}
+            self.line = b''
+            self.formatted_line = None
+            self.line_idx = 0
+            self.overflow_detected = False
+            self.binary_detected = False
+            self.num_matches = 0
 
-        color_enabled = False
+        def set_file(self, file):
+            status_msgs = ''
+            if self.binary_detected and self.num_matches > 0:
+                status_msgs += ' binary file matches'
+            if self.overflow_detected:
+                if status_msgs:
+                    status_msgs += ' and'
+                status_msgs += ' line overflow detected'
+            if status_msgs:
+                print('{filename}: {status_msgs}'.format(status_msgs=status_msgs, **self.line_data_dict))
+            self.binary_detected = False
+            self.num_matches = 0
+            self.file = file
+            if file:
+                self.line_data_dict['filename'] = AnsiString(file.name())
+
+        def set_line(self, idx, line):
+            self.line_idx = idx
+            self.line = line
+            # Remove the line ending if it is found
+            if line.endswith(self.line_ending):
+                line = line[:-len(self.line_ending)]
+                self.overflow_detected = False
+            else:
+                # Only way this is acceptable is if we are done reading from file
+                self.overflow_detected = not self.file.eof
+
+            # Remove CR if ending starts with LF
+            cr = b'\r'
+            lf = b'\n'
+            if self.line_ending.startswith(lf) and line.endswith(cr):
+                line = line[:-1]
+
+            try:
+                str_line = line.decode()
+            except UnicodeDecodeError:
+                self.binary_detected = True
+                self.formatted_line = AnsiString(line)
+            else:
+                # Make line lower case if fixed strings are used
+                if self.ignore_case and self.fixed_string_parse:
+                    str_line = str_line.lower()
+                self.formatted_line = AnsiString(str_line)
+
+        def match_found(self, file):
+            self.num_matches += 1
+            if not self.binary_detected:
+                self.line_data_dict.update({
+                    'num': AnsiString(str(self.line_idx+1)),
+                    'line': self.formatted_line
+                })
+                print(self.line_format.format(**self.line_data_dict), file=file)
+
+    def _init_line_parsing_data(self):
+        data = __class__.LineParsingData()
+
+        data.ignore_case = self._ignore_case
+        data.line_ending = self._end
+
+        data.color_enabled = False
         if self._color_output_mode == __class__.ColorOutputMode.ALWAYS:
-            color_enabled = True
+            data.color_enabled = True
         elif self._color_output_mode == __class__.ColorOutputMode.AUTO:
-            color_enabled = sys.stdout.isatty()
+            data.color_enabled = sys.stdout.isatty()
 
-        if color_enabled:
+        if data.color_enabled:
             grep_color_dict = __class__._generate_color_dict()
-            matching_color = grep_color_dict['mt']
-            if matching_color is None:
+            data.matching_color = grep_color_dict['mt']
+            if data.matching_color is None:
                 # TODO: add when invert_match is supported
                 # if args.invert_match:
                 #     matching_color = grep_color_dict['mc']
                 # else:
-                matching_color = grep_color_dict['ms']
+                data.matching_color = grep_color_dict['ms']
+        else:
+            data.matching_color = None
 
-        if color_enabled and grep_color_dict['se']:
+        if data.color_enabled and grep_color_dict['se']:
             name_num_sep = str(AnsiString(self._name_num_sep, grep_color_dict['se']))
             result_sep = str(AnsiString(self._results_sep, grep_color_dict['se']))
         else:
             name_num_sep = self._name_num_sep
             result_sep = self._results_sep
 
-        files = []
+        data.files = []
+        eol = self._end
         if not self._files:
-            files += [StdinIterable()]
+            data.files += [StdinIterable(True, eol)]
         else:
-            files += [AutoInputFileIterable(f) for f in self._files]
+            data.files += [AutoInputFileIterable(f, 'rb', eol) for f in self._files]
 
-        patterns = self._patterns
+        data.patterns = self._patterns
 
-        for i in range(len(patterns)):
+        for i in range(len(data.patterns)):
             if self._search_type == __class__.SearchType.FIXED_STRINGS:
                 if self._ignore_case:
-                    patterns[i] = patterns[i].lower()
+                    data.patterns[i] = data.patterns[i].lower()
             elif self._search_type == __class__.SearchType.BASIC_REGEXP:
                 # Transform basic regex string to extended
                 # The only difference with basic is that escaping of some characters is inverted
-                patterns[i] = _pattern_escape_invert(patterns[i], '?+{}|()')
+                data.patterns[i] = _pattern_escape_invert(data.patterns[i], '?+{}|()')
 
             if self._word_regexp:
                 if self._search_type == __class__.SearchType.FIXED_STRINGS:
                     # Transform pattern into regular expression
-                    patterns[i] = r"\b" + re.escape(patterns[i]) + r"\b"
+                    data.patterns[i] = r"\b" + re.escape(data.patterns[i]) + r"\b"
                 else:
-                    patterns[i] = r"\b" + patterns[i] + r"\b"
+                    data.patterns[i] = r"\b" + data.patterns[i] + r"\b"
             elif self._line_regexp:
                 if self._search_type == __class__.SearchType.FIXED_STRINGS:
                     # Transform pattern into regular expression
-                    patterns[i] = re.escape(patterns[i])
+                    data.patterns[i] = re.escape(data.patterns[i])
+            data.patterns[i] = data.patterns[i].encode()
 
-
-        if self._word_regexp or self._line_regexp or self._search_type == __class__.SearchType.BASIC_REGEXP:
-            # The above made the patterns conform to extended regex expression
-            local_search_type = __class__.SearchType.EXTENDED_REGEXP
+        if self._word_regexp or self._line_regexp:
+            # Force to regex parse
+            data.fixed_string_parse = False
         else:
-            local_search_type = self._search_type
+            data.fixed_string_parse = (self._search_type == __class__.SearchType.FIXED_STRINGS)
 
-        format = ''
+        data.line_format = ''
         if self._output_file_name:
-            format += '{filename'
-            if color_enabled and grep_color_dict['fn']:
-                format += ':[' + grep_color_dict['fn']
-            format += '}' + (name_num_sep if self._output_line_numbers else result_sep)
+            data.line_format += '{filename'
+            if data.color_enabled and grep_color_dict['fn']:
+                data.line_format += ':[' + grep_color_dict['fn']
+            data.line_format += '}' + (name_num_sep if self._output_line_numbers else result_sep)
         if self._output_line_numbers:
-            format += '{num'
-            if color_enabled and grep_color_dict['ln']:
-                format += ':[' + grep_color_dict['ln']
-            format += '}' + result_sep
-        format += '{line}'
+            data.line_format += '{num'
+            if data.color_enabled and grep_color_dict['ln']:
+                data.line_format += ':[' + grep_color_dict['ln']
+            data.line_format += '}' + result_sep
+        data.line_format += '{line}'
 
-        for file in files:
-            d = {'filename': AnsiString(file.name())}
+        return data
+
+    def _parse_line(self, data:LineParsingData):
+        print_line = False
+        for pattern in data.patterns:
+            if data.fixed_string_parse:
+                loc = data.line.find(pattern)
+                if loc >= 0:
+                    print_line = True
+                    if data.color_enabled:
+                        while loc >= 0:
+                            data.formatted_line.apply_formatting(data.matching_color, loc, len(pattern))
+                            loc = data.line.find(pattern, loc + len(pattern))
+                    else:
+                        # No need to keep going through each pattern
+                        break
+            else:
+                # Regular expression matching
+                flags = 0
+                if self._ignore_case:
+                    flags = re.IGNORECASE
+                if self._line_regexp:
+                    m = re.fullmatch(pattern, data.line, flags)
+                    if m is not None:
+                        print_line = True
+                        if data.color_enabled:
+                            # This is going to just format the whole line
+                            data.formatted_line.apply_formatting_for_match(data.matching_color, m)
+                else:
+                    for m in re.finditer(pattern, data.line, flags):
+                        print_line = True
+                        if data.color_enabled:
+                            data.formatted_line.apply_formatting_for_match(data.matching_color, m)
+                        else:
+                            # No need to keep iterating
+                            break
+                if print_line and data.color_enabled:
+                    # No need to keep going through each pattern
+                    break
+        if print_line:
+            data.match_found(self._print_file)
+
+    def execute(self):
+        if not self._patterns:
+            print('No patterns provided', file=sys.stderr)
+            return 1
+
+        data = self._init_line_parsing_data()
+
+        for file in data.files:
+            data.set_file(file)
             try:
                 for i, line in enumerate(file):
-                    if line.endswith('\n'):
-                        # Strip single \n if it is found at the end of a line
-                        line = line[:-1]
-                    if line.endswith('\r'):
-                        # Strip single \r if it is found at the end of a line
-                        line = line[:-1]
-                    formatted_line = AnsiString(line)
-                    if self._ignore_case:
-                        line = line.lower()
-                    print_line = False
-                    for pattern in patterns:
-                        if local_search_type == __class__.SearchType.FIXED_STRINGS:
-                            loc = line.find(pattern)
-                            if loc >= 0:
-                                print_line = True
-                                if color_enabled:
-                                    while loc >= 0:
-                                        formatted_line.apply_formatting(matching_color, loc, len(pattern))
-                                        loc = line.find(pattern, loc + len(pattern))
-                                else:
-                                    # No need to keep going through each pattern
-                                    break
-                        else:
-                            # Regular expression matching
-                            flags = 0
-                            if self._ignore_case:
-                                flags = re.IGNORECASE
-                            if self._line_regexp:
-                                m = re.fullmatch(pattern, line, flags)
-                                if m is not None:
-                                    print_line = True
-                                    if color_enabled:
-                                        # This is going to just format the whole line
-                                        formatted_line.apply_formatting_for_match(matching_color, m)
-                            else:
-                                for m in re.finditer(pattern, line, flags):
-                                    print_line = True
-                                    if color_enabled:
-                                        formatted_line.apply_formatting_for_match(matching_color, m)
-                                    else:
-                                        # No need to keep iterating
-                                        break
-                            if print_line and not color_enabled:
-                                # No need to keep going through each pattern
-                                break
-                    if print_line:
-                        d.update({'num': AnsiString(str(i+1)), 'line': formatted_line})
-                        print(format.format(**d), file=self._print_file)
-            except UnicodeDecodeError:
-                # TODO: real grep parses binary and prints message if binary matches
-                pass
+                    data.set_line(i, line)
+                    self._parse_line(data)
             except EnvironmentError as ex:
                 if not self._no_messages:
                     print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
+
+        data.set_file(None)
 
         return 0
 
@@ -660,8 +789,8 @@ class GrepArgParser:
                                 help='match only whole words')
         pattern_group.add_argument('-x', '--line-regexp', action='store_true',
                                 help='match only whole lines')
-        # pattern_group.add_argument('-z', '--null-data', action='store_true',
-        #                            help='a data line ends in 0 byte, not newline')
+        pattern_group.add_argument('-z', '--null-data', action='store_true',
+                                   help='a data line ends in 0 byte, not newline')
 
         misc_group = self._parser.add_argument_group('Miscellaneous')
         misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
@@ -779,6 +908,11 @@ class GrepArgParser:
         if args.with_filename:
             grep_object.output_file_name()
 
+        if args.null_data:
+            end = b'\x00'
+        else:
+            end = b'\n'
+        grep_object.set_end(end)
         grep_object.set_results_sep(args.result_sep)
         grep_object.set_name_num_sep(args.name_num_sep)
 
