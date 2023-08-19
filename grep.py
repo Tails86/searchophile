@@ -493,6 +493,7 @@ class Grep:
         self._word_regexp = False
         self._line_regexp = False
         self._no_messages = False
+        self._invert_match = False
         self._output_line_numbers = False
         self._output_file_name = False
         self._end = b'\n'
@@ -522,48 +523,108 @@ class Grep:
     def clear_files(self):
         self._files = []
 
-    def set_search_type(self, search_type):
+    @property
+    def search_type(self):
+        return self._search_type
+
+    @search_type.setter
+    def search_type(self, search_type):
         if not isinstance(search_type, __class__.SearchType):
             raise TypeError('Invalid type ({}) for search_type'.format(type(search_type)))
         self._search_type = search_type
 
-    def ignore_case(self, ignore_case=True):
+    @property
+    def ignore_case(self):
+        return self._ignore_case
+
+    @ignore_case.setter
+    def ignore_case(self, ignore_case):
         self._ignore_case = ignore_case
 
-    def no_ignore_case(self):
-        self.ignore_case(False)
+    @property
+    def word_regexp(self):
+        return self._word_regexp
 
-    def word_regexp(self, word_regexp=True):
+    @word_regexp.setter
+    def word_regexp(self, word_regexp):
         self._word_regexp = word_regexp
 
-    def line_regexp(self, line_regexp=True):
+    @property
+    def line_regexp(self):
+        return self._line_regexp
+
+    @line_regexp.setter
+    def line_regexp(self, line_regexp):
         self._line_regexp = line_regexp
 
-    def no_messages(self, no_messages=True):
+    @property
+    def no_messages(self):
+        return self._no_messages
+
+    @no_messages.setter
+    def no_messages(self, no_messages):
         self._no_messages = no_messages
 
-    def output_line_numbers(self, output_line_numbers=True):
+    @property
+    def invert_match(self):
+        return self._invert_match
+
+    @invert_match.setter
+    def invert_match(self, invert_match):
+        self._invert_match = invert_match
+
+    @property
+    def output_line_numbers(self):
+        return self._output_line_numbers
+
+    @output_line_numbers.setter
+    def output_line_numbers(self, output_line_numbers):
         self._output_line_numbers = output_line_numbers
 
+    @property
+    def output_file_name(self):
+        return self._output_file_name
+
+    @output_file_name.setter
     def output_file_name(self, output_file_name=True):
         self._output_file_name = output_file_name
 
-    def set_results_sep(self, results_sep):
+    @property
+    def results_sep(self):
+        return self._results_sep
+
+    @results_sep.setter
+    def results_sep(self, results_sep):
         if not isinstance(results_sep, str):
             raise TypeError('Invalid type ({}) for results_sep'.format(type(results_sep)))
         self._results_sep = results_sep
 
-    def set_name_num_sep(self, name_num_sep):
+    @property
+    def name_num_sep(self):
+        return self._name_num_sep
+
+    @name_num_sep.setter
+    def name_num_sep(self, name_num_sep):
         if not isinstance(name_num_sep, str):
             raise TypeError('Invalid type ({}) for name_num_sep'.format(type(name_num_sep)))
         self._name_num_sep = name_num_sep
 
-    def set_color_output_mode(self, color_output_mode):
+    @property
+    def color_output_mode(self):
+        return self._color_output_mode
+
+    @color_output_mode.setter
+    def color_output_mode(self, color_output_mode):
         if not isinstance(color_output_mode, __class__.ColorOutputMode):
             raise TypeError('Invalid type ({}) for color_output_mode'.format(type(color_output_mode)))
         self._color_output_mode = color_output_mode
 
-    def set_end(self, end):
+    @property
+    def end(self):
+        return self._end
+
+    @end.setter
+    def end(self, end):
         if isinstance(end, str):
             end = end.encode()
         self._end = end
@@ -598,7 +659,7 @@ class Grep:
         Holds various temporary state data in order to facilitate line parsing.
         '''
         def __init__(self):
-            self.files = []
+            self._files = []
             self.line_format = ''
             self.patterns = []
             self.line_ending = b'\n'
@@ -615,6 +676,24 @@ class Grep:
             self.overflow_detected = False
             self.binary_detected = False
             self.num_matches = 0
+
+        def set_color_mode(self, color_mode):
+            self.color_enabled = False
+            if color_mode == Grep.ColorOutputMode.ALWAYS:
+                self.color_enabled = True
+            elif color_mode == Grep.ColorOutputMode.AUTO:
+                self.color_enabled = sys.stdout.isatty()
+
+        @property
+        def files(self):
+            return self._files
+
+        @files.setter
+        def files(self, files):
+            if not files:
+                self._files = [StdinIterable(True, self.line_ending)]
+            else:
+                self._files = [AutoInputFileIterable(f, 'rb', self.line_ending) for f in files]
 
         def set_file(self, file):
             '''
@@ -666,6 +745,8 @@ class Grep:
             try:
                 str_line = self.line.decode()
             except UnicodeDecodeError:
+                # Can't decode line
+                # Note this is a bit more flexible as \x00 can be decoded by Python
                 self.binary_detected = True
                 self.formatted_line = AnsiString(self.line)
             else:
@@ -696,22 +777,18 @@ class Grep:
 
         data.ignore_case = self._ignore_case
         data.line_ending = self._end
-
-        data.color_enabled = False
-        if self._color_output_mode == __class__.ColorOutputMode.ALWAYS:
-            data.color_enabled = True
-        elif self._color_output_mode == __class__.ColorOutputMode.AUTO:
-            data.color_enabled = sys.stdout.isatty()
+        data.set_color_mode(self._color_output_mode)
+        data.files = self._files
 
         if data.color_enabled:
             grep_color_dict = __class__._generate_color_dict()
             data.matching_color = grep_color_dict['mt']
             if data.matching_color is None:
-                # TODO: add when invert_match is supported
-                # if args.invert_match:
-                #     matching_color = grep_color_dict['mc']
-                # else:
-                data.matching_color = grep_color_dict['ms']
+                if self.invert_match:
+                    # I don't get this setting because matching line isn't colored in this case
+                    data.matching_color = grep_color_dict['mc']
+                else:
+                    data.matching_color = grep_color_dict['ms']
         else:
             data.matching_color = None
 
@@ -721,13 +798,6 @@ class Grep:
         else:
             name_num_sep = self._name_num_sep
             result_sep = self._results_sep
-
-        data.files = []
-        eol = self._end
-        if not self._files:
-            data.files += [StdinIterable(True, eol)]
-        else:
-            data.files += [AutoInputFileIterable(f, 'rb', eol) for f in self._files]
 
         data.patterns = self._patterns
 
@@ -782,14 +852,17 @@ class Grep:
             if data.fixed_string_parse:
                 loc = data.line.find(pattern)
                 if loc >= 0:
-                    print_line = True
-                    if data.color_enabled:
+                    print_line = not self._invert_match
+                    if data.color_enabled and print_line:
                         while loc >= 0:
                             data.formatted_line.apply_formatting(data.matching_color, loc, len(pattern))
                             loc = data.line.find(pattern, loc + len(pattern))
                     else:
                         # No need to keep going through each pattern
                         break
+                elif self._invert_match:
+                    # Color setting is ignored in this case - just print it
+                    print_line = True
             else:
                 # Regular expression matching
                 flags = 0
@@ -798,19 +871,27 @@ class Grep:
                 if self._line_regexp:
                     m = re.fullmatch(pattern, data.line, flags)
                     if m is not None:
-                        print_line = True
+                        print_line = not self._invert_match
                         if data.color_enabled:
                             # This is going to just format the whole line
                             data.formatted_line.apply_formatting_for_match(data.matching_color, m)
-                else:
-                    for m in re.finditer(pattern, data.line, flags):
+                    elif self._invert_match:
+                        # Color setting is ignored in this case - just print it
                         print_line = True
+                else:
+                    line_matches = False
+                    for m in re.finditer(pattern, data.line, flags):
+                        line_matches = True
+                        print_line = not self._invert_match
                         if data.color_enabled:
                             data.formatted_line.apply_formatting_for_match(data.matching_color, m)
                         else:
                             # No need to keep iterating
                             break
-                if print_line and data.color_enabled:
+                    if self._invert_match and not line_matches:
+                        # Color setting is ignored in this case - just print it
+                        print_line = True
+                if print_line and (not data.color_enabled or self._invert_match):
                     # No need to keep going through each pattern
                     break
         if print_line:
@@ -877,7 +958,7 @@ class GrepArgParser:
 
         misc_group = self._parser.add_argument_group('Miscellaneous')
         misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
-        # misc_group.add_argument('-v', '--invert-match', action='store_true', help='select non-matching lines')
+        misc_group.add_argument('-v', '--invert-match', action='store_true', help='select non-matching lines')
         # misc_group.add_argument('-V', '--version', action='store_true', help='display version information and exit')
 
         output_ctrl_grp = self._parser.add_argument_group('Output control')
@@ -969,45 +1050,34 @@ class GrepArgParser:
             grep_object.add_files(args.file)
 
         if args.extended_regexp:
-            grep_object.set_search_type(Grep.SearchType.EXTENDED_REGEXP)
+            grep_object.search_type = Grep.SearchType.EXTENDED_REGEXP
         elif args.fixed_strings:
-            grep_object.set_search_type(Grep.SearchType.FIXED_STRINGS)
+            grep_object.search_type = Grep.SearchType.FIXED_STRINGS
         else:
             # Basic regexp is default if no type specified
-            grep_object.set_search_type(Grep.SearchType.BASIC_REGEXP)
+            grep_object.search_type = Grep.SearchType.BASIC_REGEXP
 
-        if args.ignore_case:
-            grep_object.ignore_case()
-
-        if args.word_regexp:
-            grep_object.word_regexp()
-
-        if args.line_regexp:
-            grep_object.line_regexp()
-
-        if args.no_messages:
-            grep_object.no_messages()
-
-        if args.line_number:
-            grep_object.output_line_numbers()
-
-        if args.with_filename:
-            grep_object.output_file_name()
+        grep_object.ignore_case = args.ignore_case
+        grep_object.word_regexp = args.word_regexp
+        grep_object.line_regexp = args.line_regexp
+        grep_object.no_messages = args.no_messages
+        grep_object.invert_match = args.invert_match
+        grep_object.output_line_numbers = args.line_number
+        grep_object.output_file_name = args.with_filename
 
         if args.null_data:
-            end = b'\x00'
+            grep_object.end = b'\x00'
         else:
-            end = b'\n'
-        grep_object.set_end(end)
-        grep_object.set_results_sep(args.result_sep)
-        grep_object.set_name_num_sep(args.name_num_sep)
+            grep_object.end = b'\n'
+        grep_object.results_sep = args.result_sep
+        grep_object.name_num_sep = args.name_num_sep
 
         if args.color == 'always':
-            grep_object.set_color_output_mode(Grep.ColorOutputMode.ALWAYS)
+            grep_object.color_output_mode = Grep.ColorOutputMode.ALWAYS
         elif args.color == 'never':
-            grep_object.set_color_output_mode(Grep.ColorOutputMode.NEVER)
+            grep_object.color_output_mode = Grep.ColorOutputMode.NEVER
         else:
-            grep_object.set_color_output_mode(Grep.ColorOutputMode.AUTO)
+            grep_object.color_output_mode = Grep.ColorOutputMode.AUTO
 
         return True
 
