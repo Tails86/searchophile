@@ -7,6 +7,7 @@ from enum import Enum
 import enum
 import re
 
+VERSION_STR = '1.0.0'
 THIS_FILE_NAME = os.path.basename(__file__)
 
 class FileIterable:
@@ -494,6 +495,7 @@ class Grep:
         self._line_regexp = False
         self._no_messages = False
         self._invert_match = False
+        self._max_count = None
         self._output_line_numbers = False
         self._output_file_name = False
         self._end = b'\n'
@@ -572,6 +574,14 @@ class Grep:
     @invert_match.setter
     def invert_match(self, invert_match):
         self._invert_match = invert_match
+
+    @property
+    def max_count(self):
+        return self._max_count
+
+    @max_count.setter
+    def max_count(self, max_count):
+        self._max_count = max_count
 
     @property
     def output_line_numbers(self):
@@ -706,6 +716,12 @@ class Grep:
             if file:
                 self.line_data_dict['filename'] = AnsiString(file.name)
                 self.file_iter = iter(file)
+            else:
+                try:
+                    self.line_data_dict.pop('filename')
+                except KeyError:
+                    pass
+                self.file_iter = None
 
         def next_line(self):
             '''
@@ -915,7 +931,7 @@ class Grep:
                 if not self._no_messages:
                     print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
             else:
-                while data.next_line():
+                while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
                     self._parse_line(data)
 
         return 0
@@ -959,11 +975,11 @@ class GrepArgParser:
         misc_group = self._parser.add_argument_group('Miscellaneous')
         misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
         misc_group.add_argument('-v', '--invert-match', action='store_true', help='select non-matching lines')
-        # misc_group.add_argument('-V', '--version', action='store_true', help='display version information and exit')
+        misc_group.add_argument('-V', '--version', action='store_true', help='display version information and exit')
 
         output_ctrl_grp = self._parser.add_argument_group('Output control')
-        # output_ctrl_grp.add_argument('-m', '--max-count', metavar='NUM', type=int, default=None,
-        #                              help='stop after NUM selected lines')
+        output_ctrl_grp.add_argument('-m', '--max-count', metavar='NUM', type=int, default=None,
+                                     help='stop after NUM selected lines')
         # output_ctrl_grp.add_argument('-b', '--byte-offset', action='store_true',
         #                              help='print the byte offset with output lines')
 
@@ -996,7 +1012,7 @@ class GrepArgParser:
         # output_ctrl_grp.add_argument('-c', '--count', action='store_true', help='print only a count of selected lines per FILE')
         # output_ctrl_grp.add_argument('-T', '--initial-tab', action='store_true', help='make tabs line up (if needed)')
         # output_ctrl_grp.add_argument('-Z', '--null', action='store_true', help='print 0 byte after FILE name')
-        output_ctrl_grp.add_argument('--result-sep', type=str, metavar='SEP', default=': ',
+        output_ctrl_grp.add_argument('--result-sep', type=str, metavar='SEP', default=':',
                                     help='String to place between header info and and search output')
         output_ctrl_grp.add_argument('--name-num-sep', type=str, metavar='SEP', default=':',
                                     help='String to place between file name and line number when both are enabled')
@@ -1020,6 +1036,10 @@ class GrepArgParser:
 
         if not args:
             return False
+
+        if args.version:
+            print('{} {}'.format(THIS_FILE_NAME, VERSION_STR))
+            sys.exit(0)
 
         # Pars patterns from all of the different options into a single list of patterns
         patterns = []
@@ -1062,6 +1082,7 @@ class GrepArgParser:
         grep_object.line_regexp = args.line_regexp
         grep_object.no_messages = args.no_messages
         grep_object.invert_match = args.invert_match
+        grep_object.max_count = args.max_count
         grep_object.output_line_numbers = args.line_number
         grep_object.output_file_name = args.with_filename
 
