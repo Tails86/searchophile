@@ -10,10 +10,28 @@ import re
 THIS_FILE_NAME = os.path.basename(__file__)
 
 class FileIterable:
+    ''' Base class for a custom file iterable '''
     # Limit each line to 128 kB which isn't human parsable at that size anyway
     LINE_BYTE_LIMIT = 128 * 1024
 
+    def __iter__(self):
+        return None
+
+    def __next__(self):
+        return None
+
+    @property
+    def name(self):
+        return None
+
+    @property
+    def eof(self):
+        return False
+
 class AutoInputFileIterable(FileIterable):
+    '''
+    Automatically opens file on iteration and returns lines as bytes or strings.
+    '''
     def __init__(self, file_path, file_mode='r', newline_str='\n'):
         self._file_path = file_path
         self._file_mode = file_mode
@@ -64,6 +82,7 @@ class AutoInputFileIterable(FileIterable):
         else:
             raise StopIteration
 
+    @property
     def name(self):
         return self._file_path
 
@@ -72,6 +91,9 @@ class AutoInputFileIterable(FileIterable):
         return (self._fp is None)
 
 class StdinIterable(FileIterable):
+    '''
+    Reads from stdin and returns lines as bytes or strings.
+    '''
     def __init__(self, as_bytes=False, end='\n'):
         self._as_bytes = as_bytes
         self._end = end
@@ -110,6 +132,7 @@ class StdinIterable(FileIterable):
             except UnicodeDecodeError:
                 return b
 
+    @property
     def name(self):
         return '(standard input)'
 
@@ -118,6 +141,9 @@ class StdinIterable(FileIterable):
         return self._eof_detected
 
 class AnsiFormat(Enum):
+    '''
+    Formatting which may be supplied to AnsiString.
+    '''
     RESET='0'
     BOLD='1'
     FAINT='2'
@@ -268,10 +294,16 @@ class AnsiString:
             self.apply_formatting(setting_or_settings)
 
     def assign_str(self, s):
+        '''
+        Assigns the base string.
+        '''
         self._s = s
 
     @property
     def base_str(self):
+        '''
+        Returns the base string without any formatting set.
+        '''
         return self._s
 
     @staticmethod
@@ -313,12 +345,21 @@ class AnsiString:
         self.apply_formatting(setting_or_settings, s, e - s)
 
     def clear_formatting(self):
+        '''
+        Clears all internal formatting.
+        '''
         self._color_settings = {}
 
     def __str__(self):
+        '''
+        Returns an ANSI format string with only internal formatting set.
+        '''
         return self.__format__(None)
 
     def __format__(self, __format_spec):
+        '''
+        Returns an ANSI format string with both internal and given formatting spec set.
+        '''
         if not __format_spec and not self._color_settings:
             # No formatting
             return self._s
@@ -392,6 +433,7 @@ class AnsiString:
 
         return out_str
 
+# Contains default color definitions when GREP_COLORS environment variable not defined
 DEFAULT_GREP_ANSI_COLORS = {
     'mt':None,
     'ms':'01;31',
@@ -407,6 +449,11 @@ DEFAULT_GREP_ANSI_COLORS = {
 }
 
 def _pattern_escape_invert(pattern, chars):
+    '''
+    Inverts regex pattern escape characters. This is helpful to transform format string from basic
+    to extended regex format (and vice-versa).
+    ex: \( -> ( and ( -> \(
+    '''
     for char in chars:
         escaped_char = '\\' + char
         pattern_split = pattern.split(escaped_char)
@@ -421,6 +468,9 @@ def _parse_patterns(patterns):
     return [y for x in patterns.split('\r\n') for y in x.split('\n')]
 
 class Grep:
+    '''
+    Contains all functionality to grep through files to find and print matching lines.
+    '''
     class SearchType(Enum):
         FIXED_STRINGS = enum.auto()
         BASIC_REGEXP = enum.auto()
@@ -544,6 +594,9 @@ class Grep:
         return grep_color_dict
 
     class LineParsingData:
+        '''
+        Holds various temporary state data in order to facilitate line parsing.
+        '''
         def __init__(self):
             self.files = []
             self.line_format = ''
@@ -554,6 +607,7 @@ class Grep:
             self.color_enabled = False
             self.matching_color = None
             self.file = None
+            self.file_iter = None
             self.line_data_dict = {}
             self.line = b''
             self.formatted_line = None
@@ -563,27 +617,41 @@ class Grep:
             self.num_matches = 0
 
         def set_file(self, file):
-            status_msgs = ''
-            if self.binary_detected and self.num_matches > 0:
-                status_msgs += ' binary file matches'
-            if self.overflow_detected:
-                if status_msgs:
-                    status_msgs += ' and'
-                status_msgs += ' line overflow detected'
-            if status_msgs:
-                print('{filename}: {status_msgs}'.format(status_msgs=status_msgs, **self.line_data_dict))
+            '''
+            Prints any errors detected of previous file and sets the file currently being parsed
+            '''
             self.binary_detected = False
+            self.line_idx = 0
             self.num_matches = 0
             self.file = file
             if file:
-                self.line_data_dict['filename'] = AnsiString(file.name())
+                self.line_data_dict['filename'] = AnsiString(file.name)
+                self.file_iter = iter(file)
 
-        def set_line(self, idx, line):
-            self.line_idx = idx
-            self.line = line
+        def next_line(self):
+            '''
+            Grabs the next line from the file and formats the line as necessary.
+            Returns: True if line has been read or False if end of file reached.
+            '''
+            self.line_idx += 1
+            try:
+                self.line = next(self.file_iter)
+            except StopIteration:
+                # File is complete
+                status_msgs = ''
+                if self.binary_detected and self.num_matches > 0:
+                    status_msgs += ' binary file matches'
+                if self.overflow_detected:
+                    if status_msgs:
+                        status_msgs += ' and'
+                    status_msgs += ' line overflow detected'
+                if status_msgs:
+                    print('{filename}: {status_msgs}'.format(status_msgs=status_msgs, **self.line_data_dict))
+                return False
+
             # Remove the line ending if it is found
-            if line.endswith(self.line_ending):
-                line = line[:-len(self.line_ending)]
+            if self.line.endswith(self.line_ending):
+                self.line = self.line[:-len(self.line_ending)]
                 self.overflow_detected = False
             else:
                 # Only way this is acceptable is if we are done reading from file
@@ -592,21 +660,26 @@ class Grep:
             # Remove CR if ending starts with LF
             cr = b'\r'
             lf = b'\n'
-            if self.line_ending.startswith(lf) and line.endswith(cr):
-                line = line[:-1]
+            if self.line_ending.startswith(lf) and self.line.endswith(cr):
+                self.line = self.line[:-1]
 
             try:
-                str_line = line.decode()
+                str_line = self.line.decode()
             except UnicodeDecodeError:
                 self.binary_detected = True
-                self.formatted_line = AnsiString(line)
+                self.formatted_line = AnsiString(self.line)
             else:
                 # Make line lower case if fixed strings are used
                 if self.ignore_case and self.fixed_string_parse:
                     str_line = str_line.lower()
                 self.formatted_line = AnsiString(str_line)
 
+            return True
+
         def match_found(self, file):
+            '''
+            Called when match is found in order to increment match count and print the line.
+            '''
             self.num_matches += 1
             if not self.binary_detected:
                 self.line_data_dict.update({
@@ -616,6 +689,9 @@ class Grep:
                 print(self.line_format.format(**self.line_data_dict), file=file)
 
     def _init_line_parsing_data(self):
+        '''
+        Initializes line parsing data which makes up the local running state of Grep.execute().
+        '''
         data = __class__.LineParsingData()
 
         data.ignore_case = self._ignore_case
@@ -698,6 +774,9 @@ class Grep:
         return data
 
     def _parse_line(self, data:LineParsingData):
+        '''
+        Parses a line from a file, formats line, and prints the line if match is found.
+        '''
         print_line = False
         for pattern in data.patterns:
             if data.fixed_string_parse:
@@ -738,6 +817,9 @@ class Grep:
             data.match_found(self._print_file)
 
     def execute(self):
+        '''
+        Executes Grep with all the assigned attributes.
+        '''
         if not self._patterns:
             print('No patterns provided', file=sys.stderr)
             return 1
@@ -745,21 +827,22 @@ class Grep:
         data = self._init_line_parsing_data()
 
         for file in data.files:
-            data.set_file(file)
             try:
-                for i, line in enumerate(file):
-                    data.set_line(i, line)
-                    self._parse_line(data)
+                data.set_file(file)
             except EnvironmentError as ex:
+                # This occurs if permission is denied
                 if not self._no_messages:
                     print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
-
-        data.set_file(None)
+            else:
+                while data.next_line():
+                    self._parse_line(data)
 
         return 0
 
-
 class GrepArgParser:
+    '''
+    Used to parse command line arguments for Grep.
+    '''
     def __init__(self):
         self._parser = argparse.ArgumentParser(description='Partially implements grep command entirely in Python.')
         self._parser.add_argument('patterns_positional', type=str, nargs='?', default=None, metavar='PATTERNS',
@@ -848,6 +931,9 @@ class GrepArgParser:
         # context_ctrl_grp.add_argument('-U', '--binary', action='store_true', help='do not strip CR characters at EOL (MSDOS/Windows)')
 
     def parse(self, cliargs, grep_object:Grep):
+        '''
+        Parses command line arguments into the given Grep object
+        '''
         grep_object.reset()
         args = self._parser.parse_args(cliargs)
 
@@ -926,6 +1012,10 @@ class GrepArgParser:
         return True
 
 def main(cliargs):
+    '''
+    Performs Grep with given command line arguments
+    Returns: 0 on success, non-zero integer on failure
+    '''
     grep = Grep()
     grep_arg_parser = GrepArgParser()
     if not grep_arg_parser.parse(cliargs, grep):
