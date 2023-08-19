@@ -498,9 +498,12 @@ class Grep:
         self._max_count = None
         self._output_line_numbers = False
         self._output_file_name = False
+        self._output_byte_offset = False
+        self._line_buffered = False
         self._end = b'\n'
         self._results_sep = ':'
         self._name_num_sep = ':'
+        self._name_byte_sep = ':'
         self._color_output_mode = __class__.ColorOutputMode.AUTO
 
     def add_patterns(self, pattern_or_patterns):
@@ -600,6 +603,22 @@ class Grep:
         self._output_file_name = output_file_name
 
     @property
+    def output_byte_offset(self):
+        return self._output_byte_offset
+
+    @output_byte_offset.setter
+    def output_byte_offset(self, output_byte_offset=True):
+        self._output_byte_offset = output_byte_offset
+
+    @property
+    def line_buffered(self):
+        return self._line_buffered
+
+    @line_buffered.setter
+    def line_buffered(self, line_buffered):
+        self._line_buffered = line_buffered
+
+    @property
     def results_sep(self):
         return self._results_sep
 
@@ -618,6 +637,16 @@ class Grep:
         if not isinstance(name_num_sep, str):
             raise TypeError('Invalid type ({}) for name_num_sep'.format(type(name_num_sep)))
         self._name_num_sep = name_num_sep
+
+    @property
+    def name_byte_sep(self):
+        return self._name_byte_sep
+
+    @name_byte_sep.setter
+    def name_byte_sep(self, name_byte_sep):
+        if not isinstance(name_byte_sep, str):
+            raise TypeError('Invalid type ({}) for name_byte_sep'.format(type(name_byte_sep)))
+        self._name_byte_sep = name_byte_sep
 
     @property
     def color_output_mode(self):
@@ -677,15 +706,18 @@ class Grep:
             self.fixed_string_parse = False
             self.color_enabled = False
             self.matching_color = None
+            self.flush = False
             self.file = None
             self.file_iter = None
             self.line_data_dict = {}
             self.line = b''
+            self.line_len = 0
             self.formatted_line = None
-            self.line_idx = 0
+            self.line_num = 0
             self.overflow_detected = False
             self.binary_detected = False
             self.num_matches = 0
+            self.byte_offset = 0
 
         def set_color_mode(self, color_mode):
             self.color_enabled = False
@@ -710,7 +742,7 @@ class Grep:
             Prints any errors detected of previous file and sets the file currently being parsed
             '''
             self.binary_detected = False
-            self.line_idx = 0
+            self.line_num = 0
             self.num_matches = 0
             self.file = file
             if file:
@@ -728,7 +760,8 @@ class Grep:
             Grabs the next line from the file and formats the line as necessary.
             Returns: True if line has been read or False if end of file reached.
             '''
-            self.line_idx += 1
+            self.byte_offset += self.line_len
+            self.line_num += 1
             try:
                 self.line = next(self.file_iter)
             except StopIteration:
@@ -743,6 +776,8 @@ class Grep:
                 if status_msgs:
                     print('{filename}: {status_msgs}'.format(status_msgs=status_msgs, **self.line_data_dict))
                 return False
+
+            self.line_len = len(self.line)
 
             # Remove the line ending if it is found
             if self.line.endswith(self.line_ending):
@@ -780,10 +815,11 @@ class Grep:
             self.num_matches += 1
             if not self.binary_detected:
                 self.line_data_dict.update({
-                    'num': AnsiString(str(self.line_idx+1)),
+                    'num': AnsiString(str(self.line_num)),
+                    'byte_offset': AnsiString(str(self.byte_offset)),
                     'line': self.formatted_line
                 })
-                print(self.line_format.format(**self.line_data_dict), file=file)
+                print(self.line_format.format(**self.line_data_dict), file=file, flush=self.flush)
 
     def _init_line_parsing_data(self):
         '''
@@ -795,6 +831,7 @@ class Grep:
         data.line_ending = self._end
         data.set_color_mode(self._color_output_mode)
         data.files = self._files
+        data.flush = self._line_buffered
 
         if data.color_enabled:
             grep_color_dict = __class__._generate_color_dict()
@@ -810,9 +847,11 @@ class Grep:
 
         if data.color_enabled and grep_color_dict['se']:
             name_num_sep = str(AnsiString(self._name_num_sep, grep_color_dict['se']))
+            name_byte_sep = str(AnsiString(self._name_byte_sep, grep_color_dict['se']))
             result_sep = str(AnsiString(self._results_sep, grep_color_dict['se']))
         else:
             name_num_sep = self._name_num_sep
+            name_byte_sep = self._name_byte_sep
             result_sep = self._results_sep
 
         data.patterns = self._patterns
@@ -845,16 +884,35 @@ class Grep:
             data.fixed_string_parse = (self._search_type == __class__.SearchType.FIXED_STRINGS)
 
         data.line_format = ''
+
         if self._output_file_name:
             data.line_format += '{filename'
             if data.color_enabled and grep_color_dict['fn']:
                 data.line_format += ':[' + grep_color_dict['fn']
-            data.line_format += '}' + (name_num_sep if self._output_line_numbers else result_sep)
+            data.line_format += '}'
+            if self._output_line_numbers:
+                data.line_format += name_num_sep
+            elif self._output_byte_offset:
+                data.line_format += name_byte_sep
+            else:
+                data.line_format += result_sep
+
         if self._output_line_numbers:
             data.line_format += '{num'
             if data.color_enabled and grep_color_dict['ln']:
                 data.line_format += ':[' + grep_color_dict['ln']
+            data.line_format += '}'
+            if self._output_byte_offset:
+                data.line_format += name_byte_sep
+            else:
+                data.line_format += result_sep
+
+        if self._output_byte_offset:
+            data.line_format += '{byte_offset'
+            if data.color_enabled and grep_color_dict['ln']:
+                data.line_format += ':[' + grep_color_dict['ln']
             data.line_format += '}' + result_sep
+
         data.line_format += '{line}'
 
         return data
@@ -980,11 +1038,10 @@ class GrepArgParser:
         output_ctrl_grp = self._parser.add_argument_group('Output control')
         output_ctrl_grp.add_argument('-m', '--max-count', metavar='NUM', type=int, default=None,
                                      help='stop after NUM selected lines')
-        # output_ctrl_grp.add_argument('-b', '--byte-offset', action='store_true',
-        #                              help='print the byte offset with output lines')
-
+        output_ctrl_grp.add_argument('-b', '--byte-offset', action='store_true',
+                                     help='print the byte offset with output lines')
         output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with output lines')
-        # output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
+        output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
         output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with output lines')
         # output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
         # output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name prefix')
@@ -1001,6 +1058,7 @@ class GrepArgParser:
         # output_ctrl_grp.add_argument('-D', '--devices=ACTION', type=str, metavar='ACTION', choices=['read', 'skip'],
         #                              help='how to handle devices, FIFOs and sockets;'
         #                              'ACTION is \'read\' or \'skip\'')
+        # NOTE: Recursive forces file name printing unless no-filename set
         # output_ctrl_grp.add_argument('-r', '--recursive', action='store_true', help='like --directories=recurse')
         # output_ctrl_grp.add_argument('-R', '--dereference-recursive', action='store_true', help='likewise, but follow all symlinks')
         # output_ctrl_grp.add_argument('--include', type=str, metavar='GLOB', help='search only files that match GLOB (a file pattern)')
@@ -1016,6 +1074,8 @@ class GrepArgParser:
                                     help='String to place between header info and and search output')
         output_ctrl_grp.add_argument('--name-num-sep', type=str, metavar='SEP', default=':',
                                     help='String to place between file name and line number when both are enabled')
+        output_ctrl_grp.add_argument('--name-byte-sep', type=str, metavar='SEP', default=':',
+                                    help='String to place between file name and byte number when both are enabled')
 
         context_ctrl_grp = self._parser.add_argument_group('Context control')
         # context_ctrl_grp.add_argument('-B, --before-context=NUM', action='store_true', help='print NUM lines of leading context')
@@ -1085,6 +1145,8 @@ class GrepArgParser:
         grep_object.max_count = args.max_count
         grep_object.output_line_numbers = args.line_number
         grep_object.output_file_name = args.with_filename
+        grep_object.output_byte_offset = args.byte_offset
+        grep_object.line_buffered = args.line_buffered
 
         if args.null_data:
             grep_object.end = b'\x00'
@@ -1092,6 +1154,7 @@ class GrepArgParser:
             grep_object.end = b'\n'
         grep_object.results_sep = args.result_sep
         grep_object.name_num_sep = args.name_num_sep
+        grep_object.name_byte_sep = args.name_byte_sep
 
         if args.color == 'always':
             grep_object.color_output_mode = Grep.ColorOutputMode.ALWAYS
