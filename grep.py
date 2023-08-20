@@ -1,5 +1,27 @@
 #!/usr/bin/env python3
 
+# MIT License
+#
+# Copyright (c) 2023 James Smith
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import sys
 import argparse
@@ -33,7 +55,7 @@ class AutoInputFileIterable(FileIterable):
     '''
     Automatically opens file on iteration and returns lines as bytes or strings.
     '''
-    def __init__(self, file_path, file_mode='r', newline_str='\n'):
+    def __init__(self, file_path, file_mode='rb', newline_str='\n'):
         self._file_path = file_path
         self._file_mode = file_mode
         self._newline_str = newline_str
@@ -95,9 +117,10 @@ class StdinIterable(FileIterable):
     '''
     Reads from stdin and returns lines as bytes or strings.
     '''
-    def __init__(self, as_bytes=False, end='\n'):
+    def __init__(self, as_bytes=True, end='\n', label='(standard input)'):
         self._as_bytes = as_bytes
         self._end = end
+        self._label = label
         if isinstance(self._end, str):
             self._end = self._end.encode()
         self._eof_detected = False
@@ -135,7 +158,7 @@ class StdinIterable(FileIterable):
 
     @property
     def name(self):
-        return '(standard input)'
+        return self._label
 
     @property
     def eof(self):
@@ -511,6 +534,7 @@ class Grep:
         self._name_byte_sep = ':'
         self._color_output_mode = __class__.ColorOutputMode.AUTO
         self._directory_fn = __class__.Directory.READ
+        self._label = '(standard input)'
 
     def add_patterns(self, pattern_or_patterns):
         if isinstance(pattern_or_patterns, list):
@@ -625,6 +649,14 @@ class Grep:
         self._line_buffered = line_buffered
 
     @property
+    def label(self):
+        return self._label
+
+    @label.setter
+    def label(self, label):
+        self._label = label
+
+    @property
     def results_sep(self):
         return self._results_sep
 
@@ -712,7 +744,7 @@ class Grep:
         Holds various temporary state data in order to facilitate line parsing.
         '''
         def __init__(self):
-            self._files = []
+            self.files = []
             self.line_format = ''
             self.patterns = []
             self.line_ending = b'\n'
@@ -720,7 +752,6 @@ class Grep:
             self.fixed_string_parse = False
             self.color_enabled = False
             self.matching_color = None
-            self.flush = False
             self.file = None
             self.file_iter = None
             self.line_data_dict = {}
@@ -739,17 +770,6 @@ class Grep:
                 self.color_enabled = True
             elif color_mode == Grep.ColorOutputMode.AUTO:
                 self.color_enabled = sys.stdout.isatty()
-
-        @property
-        def files(self):
-            return self._files
-
-        @files.setter
-        def files(self, files):
-            if not files:
-                self._files = [StdinIterable(True, self.line_ending)]
-            else:
-                self._files = [AutoInputFileIterable(f, 'rb', self.line_ending) for f in files]
 
         def set_file(self, file):
             '''
@@ -822,7 +842,7 @@ class Grep:
 
             return True
 
-        def match_found(self, file):
+        def match_found(self, file, flush):
             '''
             Called when match is found in order to increment match count and print the line.
             '''
@@ -833,7 +853,10 @@ class Grep:
                     'byte_offset': AnsiString(str(self.byte_offset)),
                     'line': self.formatted_line
                 })
-                print(self.line_format.format(**self.line_data_dict), file=file, flush=self.flush)
+                print(self.line_format.format(**self.line_data_dict), file=file, flush=flush)
+
+    def _make_file_iterable(self, path):
+        return AutoInputFileIterable(path, 'rb', self.end)
 
     def _init_line_parsing_data(self):
         '''
@@ -844,8 +867,10 @@ class Grep:
         data.ignore_case = self._ignore_case
         data.line_ending = self._end
         data.set_color_mode(self._color_output_mode)
-        data.files = self._files
-        data.flush = self._line_buffered
+        if not self._files:
+            data.files = [StdinIterable(True, self.end, self._label)]
+        else:
+            data.files = [self._make_file_iterable(f) for f in self._files]
 
         if data.color_enabled:
             grep_color_dict = __class__._generate_color_dict()
@@ -983,7 +1008,7 @@ class Grep:
                     # No need to keep going through each pattern
                     break
         if print_line:
-            data.match_found(self._print_file)
+            data.match_found(self._print_file, self._line_buffered)
 
     def _parse_file(self, file, data):
         try:
@@ -1014,7 +1039,7 @@ class Grep:
                     for root, _, recurse_files in os.walk(file.name):
                         for recurse_file in recurse_files:
                             file_path = os.path.join(root, recurse_file)
-                            self._parse_file(AutoInputFileIterable(file_path, 'rb', self.end), data)
+                            self._parse_file(self._make_file_iterable(file_path), data)
             else:
                 self._parse_file(file, data)
 
@@ -1071,7 +1096,7 @@ class GrepArgParser:
         output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
         output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with output lines')
         output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
-        # output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name prefix')
+        output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name prefix')
         # output_ctrl_grp.add_argument('-o', '--only-matching', action='store_true', help='show only nonempty parts of lines that match')
         # output_ctrl_grp.add_argument('-q', '--quiet', '--silent', action='store_true', help='suppress all normal output')
         # output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', default='binary',
@@ -1175,6 +1200,7 @@ class GrepArgParser:
         grep_object.output_file_name = args.with_filename
         grep_object.output_byte_offset = args.byte_offset
         grep_object.line_buffered = args.line_buffered
+        grep_object.label = args.label
 
         if args.recursive or args.directories == 'recurse':
             grep_object.directory_fn = Grep.Directory.RECURSE
@@ -1217,4 +1243,8 @@ def main(cliargs):
         return grep.execute()
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        print('')
+        sys.exit(0)
