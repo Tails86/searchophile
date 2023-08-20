@@ -32,6 +32,10 @@ import re
 VERSION_STR = '1.0.0'
 THIS_FILE_NAME = os.path.basename(__file__)
 
+class BinaryDetectedException(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+
 class FileIterable:
     ''' Base class for a custom file iterable '''
     # Limit each line to 128 kB which isn't human parsable at that size anyway
@@ -566,6 +570,11 @@ class Grep:
         RECURSE = enum.auto()
         SKIP = enum.auto()
 
+    class BinaryParseFunction(Enum):
+        PRINT_ERROR = enum.auto()
+        IGNORE_DECODE_ERRORS = enum.auto()
+        SKIP = enum.auto()
+
     def __init__(self, print_file=None):
         self.reset()
         self._print_file = print_file
@@ -593,6 +602,7 @@ class Grep:
         self._label = '(standard input)'
         self._quiet = False
         self._only_matching = False
+        self._binary_parse_function = __class__.BinaryParseFunction.PRINT_ERROR
 
     def add_patterns(self, pattern_or_patterns):
         if isinstance(pattern_or_patterns, list):
@@ -788,6 +798,16 @@ class Grep:
     def only_matching(self, only_matching):
         self._only_matching = only_matching
 
+    @property
+    def binary_parse_function(self):
+        return self._binary_parse_function
+
+    @binary_parse_function.setter
+    def binary_parse_function(self, binary_parse_function):
+        if not isinstance(binary_parse_function, __class__.BinaryParseFunction):
+            raise TypeError('Invalid type ({}) for binary_parse_function'.format(type(binary_parse_function)))
+        self._binary_parse_function = binary_parse_function
+
     @staticmethod
     def _generate_color_dict():
         grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
@@ -839,6 +859,7 @@ class Grep:
             self.num_matches = 0
             self.byte_offset = 0
             self.print_fn = None
+            self.binary_parse_function = Grep.BinaryParseFunction.PRINT_ERROR
 
         def set_color_mode(self, color_mode):
             self.color_enabled = False
@@ -877,7 +898,11 @@ class Grep:
             except StopIteration:
                 # File is complete
                 status_msgs = ''
-                if self.binary_detected and self.num_matches > 0:
+                if (
+                    self.binary_detected
+                    and self.num_matches > 0
+                    and self.binary_parse_function == Grep.BinaryParseFunction.PRINT_ERROR
+                ):
                     status_msgs += ' binary file matches'
                 if self.overflow_detected:
                     if status_msgs:
@@ -905,12 +930,19 @@ class Grep:
                 self.line = self.line[:-1]
 
             try:
-                str_line = self.line.decode()
+                if self.binary_parse_function == Grep.BinaryParseFunction.IGNORE_DECODE_ERRORS:
+                    errors='ignore'
+                else:
+                    errors='strict'
+                str_line = self.line.decode(errors=errors)
             except UnicodeDecodeError:
                 # Can't decode line
-                # Note this is a bit more flexible as \x00 can be decoded by Python without error
-                self.binary_detected = True
-                self.formatted_line = AnsiString(self.line)
+                if self.binary_parse_function == Grep.BinaryParseFunction.SKIP:
+                    raise BinaryDetectedException()
+                else:
+                    # Note this is a bit more flexible as \x00 can be decoded by Python without error
+                    self.binary_detected = True
+                    self.formatted_line = AnsiString(self.line)
             else:
                 # Make line lower case if fixed strings are used
                 if self.ignore_case and self.fixed_string_parse:
@@ -954,6 +986,7 @@ class Grep:
 
         data.ignore_case = self._ignore_case
         data.line_ending = self._end
+        data.binary_parse_function = self.binary_parse_function
         data.set_color_mode(self._color_output_mode)
         if not self._files:
             data.files = [StdinIterable(True, self.end, self._label)]
@@ -1113,9 +1146,12 @@ class Grep:
             if not self._no_messages:
                 print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
         else:
-            while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
-                if self._parse_line(data):
-                    match_found = True
+            try:
+                while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
+                    if self._parse_line(data):
+                        match_found = True
+            except BinaryDetectedException:
+                pass # Skip the rest of the file and continue
         return match_found
 
     def execute(self):
@@ -1203,12 +1239,13 @@ class GrepArgParser:
         output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name')
         output_ctrl_grp.add_argument('-o', '--only-matching', action='store_true', help='show only nonempty parts of lines that match')
         output_ctrl_grp.add_argument('-q', '--quiet', '--silent', action='store_true', help='suppress all normal output')
-        # output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', default='binary',
-        #                              choices=['binary', 'text', 'without-match'],
-        #                              help='sets how binary file is parsed;\n'
-        #                              'TYPE is \'binary\', \'text\', or \'without-match\'')
-        # output_ctrl_grp.add_argument('-a', '--text', action='store_true', help='same as --binary-files=text')
-        # output_ctrl_grp.add_argument('-I', action='store_true', help='same as --binary-files=without-match')
+        output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', default='binary',
+                                     choices=['binary', 'text', 'without-match'],
+                                     help='sets how binary file is parsed;\n'
+                                     'TYPE is \'binary\', \'text\', or \'without-match\'')
+        output_ctrl_grp.add_argument('-a', '--text', action='store_true', help='same as --binary-files=text')
+        output_ctrl_grp.add_argument('-I', dest='binary_without_match', action='store_true',
+                                     help='same as --binary-files=without-match')
         output_ctrl_grp.add_argument('-d', '--directories', type=str, metavar='ACTION', default='read',
                                      choices=['read', 'recurse', 'skip'],
                                      help='controls how directory input is handled in FILE;\n'
@@ -1330,6 +1367,13 @@ class GrepArgParser:
             grep_object.color_output_mode = Grep.ColorOutputMode.NEVER
         else:
             grep_object.color_output_mode = Grep.ColorOutputMode.AUTO
+
+        if args.binary_files == 'text' or args.text:
+            grep_object.binary_parse_function = Grep.BinaryParseFunction.IGNORE_DECODE_ERRORS
+        elif args.binary_files == 'without-match' or args.binary_without_match:
+            grep_object.binary_parse_function = Grep.BinaryParseFunction.SKIP
+        else:
+            grep_object.binary_parse_function = Grep.BinaryParseFunction.PRINT_ERROR
 
         return True
 
