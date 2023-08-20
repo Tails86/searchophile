@@ -482,6 +482,11 @@ class Grep:
         ALWAYS = enum.auto()
         NEVER = enum.auto()
 
+    class Directory(Enum):
+        READ = enum.auto()
+        RECURSE = enum.auto()
+        SKIP = enum.auto()
+
     def __init__(self, print_file=None):
         self.reset()
         self._print_file = print_file
@@ -505,6 +510,7 @@ class Grep:
         self._name_num_sep = ':'
         self._name_byte_sep = ':'
         self._color_output_mode = __class__.ColorOutputMode.AUTO
+        self._directory_fn = __class__.Directory.READ
 
     def add_patterns(self, pattern_or_patterns):
         if isinstance(pattern_or_patterns, list):
@@ -661,6 +667,14 @@ class Grep:
     @property
     def end(self):
         return self._end
+
+    @property
+    def directory_fn(self):
+        return self._directory_fn
+
+    @directory_fn.setter
+    def directory_fn(self, directory_fn):
+        self._directory_fn = directory_fn
 
     @end.setter
     def end(self, end):
@@ -971,6 +985,17 @@ class Grep:
         if print_line:
             data.match_found(self._print_file)
 
+    def _parse_file(self, file, data):
+        try:
+            data.set_file(file)
+        except EnvironmentError as ex:
+            # This occurs if permission is denied
+            if not self._no_messages:
+                print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
+        else:
+            while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
+                self._parse_line(data)
+
     def execute(self):
         '''
         Executes Grep with all the assigned attributes.
@@ -982,15 +1007,16 @@ class Grep:
         data = self._init_line_parsing_data()
 
         for file in data.files:
-            try:
-                data.set_file(file)
-            except EnvironmentError as ex:
-                # This occurs if permission is denied
-                if not self._no_messages:
-                    print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
+            if os.path.isdir(file.name):
+                if self._directory_fn == __class__.Directory.READ:
+                    print('{}: {}: Is a directory'.format(THIS_FILE_NAME, file.name))
+                elif self._directory_fn == __class__.Directory.RECURSE:
+                    for root, _, recurse_files in os.walk(file.name):
+                        for recurse_file in recurse_files:
+                            file_path = os.path.join(root, recurse_file)
+                            self._parse_file(AutoInputFileIterable(file_path, 'rb', self.end), data)
             else:
-                while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
-                    self._parse_line(data)
+                self._parse_file(file, data)
 
         return 0
 
@@ -999,7 +1025,7 @@ class GrepArgParser:
     Used to parse command line arguments for Grep.
     '''
     def __init__(self):
-        self._parser = argparse.ArgumentParser(description='Partially implements grep command entirely in Python.')
+        self._parser = argparse.ArgumentParser(description='Partially implements grep command entirely in Python.', add_help=False)
         self._parser.add_argument('patterns_positional', type=str, nargs='?', default=None, metavar='PATTERNS',
                             help='Pattern(s) to search for; can contain multiple patterns separated by newlines. '
                             'This is required if --regexp or --file are not specified.')
@@ -1034,6 +1060,7 @@ class GrepArgParser:
         misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
         misc_group.add_argument('-v', '--invert-match', action='store_true', help='select non-matching lines')
         misc_group.add_argument('-V', '--version', action='store_true', help='display version information and exit')
+        misc_group.add_argument('--help', action='help', help='display this help text and exit')
 
         output_ctrl_grp = self._parser.add_argument_group('Output control')
         output_ctrl_grp.add_argument('-m', '--max-count', metavar='NUM', type=int, default=None,
@@ -1043,23 +1070,24 @@ class GrepArgParser:
         output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with output lines')
         output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
         output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with output lines')
-        # output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
+        output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
         # output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name prefix')
         # output_ctrl_grp.add_argument('-o', '--only-matching', action='store_true', help='show only nonempty parts of lines that match')
         # output_ctrl_grp.add_argument('-q', '--quiet', '--silent', action='store_true', help='suppress all normal output')
-        # output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', choices=['binary', 'text', 'without-match'],
+        # output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', default='binary',
+        #                              choices=['binary', 'text', 'without-match'],
         #                              help='assume that binary files are TYPE;\n'
         #                              'TYPE is \'binary\', \'text\', or \'without-match\'')
         # output_ctrl_grp.add_argument('-a', '--text', action='store_true', help='equivalent to --binary-files=text')
         # output_ctrl_grp.add_argument('-I', action='store_true', help='equivalent to --binary-files=without-match')
-        # output_ctrl_grp.add_argument('-d', '--directories', type=str, metavar='ACTION', choices=['read', 'recurse', 'skip'],
-        #                              help='how to handle directories;\n'
-        #                              'ACTION is \'read\', \'recurse\', or \'skip\'')
+        output_ctrl_grp.add_argument('-d', '--directories', type=str, metavar='ACTION', default='read',
+                                     choices=['read', 'recurse', 'skip'],
+                                     help='how to handle directories;\n'
+                                     'ACTION is \'read\', \'recurse\', or \'skip\'')
         # output_ctrl_grp.add_argument('-D', '--devices=ACTION', type=str, metavar='ACTION', choices=['read', 'skip'],
         #                              help='how to handle devices, FIFOs and sockets;'
         #                              'ACTION is \'read\' or \'skip\'')
-        # NOTE: Recursive forces file name printing unless no-filename set
-        # output_ctrl_grp.add_argument('-r', '--recursive', action='store_true', help='like --directories=recurse')
+        output_ctrl_grp.add_argument('-r', '--recursive', action='store_true', help='like --directories=recurse')
         # output_ctrl_grp.add_argument('-R', '--dereference-recursive', action='store_true', help='likewise, but follow all symlinks')
         # output_ctrl_grp.add_argument('--include', type=str, metavar='GLOB', help='search only files that match GLOB (a file pattern)')
         # output_ctrl_grp.add_argument('--exclude', type=str, metavar='GLOB', help='skip files that match GLOB')
@@ -1148,10 +1176,21 @@ class GrepArgParser:
         grep_object.output_byte_offset = args.byte_offset
         grep_object.line_buffered = args.line_buffered
 
+        if args.recursive or args.directories == 'recurse':
+            grep_object.directory_fn = Grep.Directory.RECURSE
+            if not args.no_filename:
+                # Force output of file name
+                grep_object.output_file_name = True
+        elif args.directories == 'skip':
+            grep_object.directory_fn = Grep.Directory.SKIP
+        else:
+            grep_object.directory_fn = Grep.Directory.READ
+
         if args.null_data:
             grep_object.end = b'\x00'
         else:
             grep_object.end = b'\n'
+
         grep_object.results_sep = args.result_sep
         grep_object.name_num_sep = args.name_num_sep
         grep_object.name_byte_sep = args.name_byte_sep
