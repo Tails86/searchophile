@@ -603,6 +603,7 @@ class Grep:
         self._quiet = False
         self._only_matching = False
         self._binary_parse_function = __class__.BinaryParseFunction.PRINT_ERROR
+        self._strip_cr = True
 
     def add_patterns(self, pattern_or_patterns):
         if isinstance(pattern_or_patterns, list):
@@ -808,6 +809,14 @@ class Grep:
             raise TypeError('Invalid type ({}) for binary_parse_function'.format(type(binary_parse_function)))
         self._binary_parse_function = binary_parse_function
 
+    @property
+    def strip_cr(self):
+        return self._strip_cr
+
+    @strip_cr.setter
+    def strip_cr(self, strip_cr):
+        self._strip_cr = strip_cr
+
     @staticmethod
     def _generate_color_dict():
         grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
@@ -860,6 +869,7 @@ class Grep:
             self.byte_offset = 0
             self.print_fn = None
             self.binary_parse_function = Grep.BinaryParseFunction.PRINT_ERROR
+            self.strip_cr = True
 
         def set_color_mode(self, color_mode):
             self.color_enabled = False
@@ -926,7 +936,7 @@ class Grep:
             # Remove CR if ending starts with LF
             cr = b'\r'
             lf = b'\n'
-            if self.line_ending.startswith(lf) and self.line.endswith(cr):
+            if self.line_ending.startswith(lf) and self.line.endswith(cr) and self.strip_cr:
                 self.line = self.line[:-1]
 
             try:
@@ -986,10 +996,14 @@ class Grep:
 
         data.ignore_case = self._ignore_case
         data.line_ending = self._end
-        data.binary_parse_function = self.binary_parse_function
+        data.binary_parse_function = self._binary_parse_function
+        data.strip_cr = self._strip_cr
         data.set_color_mode(self._color_output_mode)
         if not self._files:
-            data.files = [StdinIterable(True, self.end, self._label)]
+            if self.directory_fn == __class__.Directory.RECURSE:
+                data.files = [self._make_file_iterable('.')]
+            else:
+                data.files = [StdinIterable(True, self.end, self._label)]
         else:
             data.files = [self._make_file_iterable(f) for f in self._files]
 
@@ -1276,7 +1290,7 @@ class GrepArgParser:
                                     choices=['always', 'never', 'auto'],
                                     help='use ANSI escape codes to highlight the matching strings;\n'
                                     'WHEN is \'always\', \'never\', or \'auto\'')
-        # context_ctrl_grp.add_argument('-U', '--binary', action='store_true', help='do not strip CR characters at EOL (MSDOS/Windows)')
+        context_ctrl_grp.add_argument('-U', '--binary', action='store_true', help='do not strip CR characters at EOL (MSDOS/Windows)')
 
     def parse(self, cliargs, grep_object:Grep):
         '''
@@ -1341,6 +1355,7 @@ class GrepArgParser:
         grep_object.label = args.label
         grep_object.quiet = args.quiet
         grep_object.only_matching = args.only_matching
+        grep_object.strip_cr = not args.binary
 
         if args.recursive or args.directories == 'recurse':
             grep_object.directory_fn = Grep.Directory.RECURSE
