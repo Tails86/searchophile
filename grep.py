@@ -1102,8 +1102,10 @@ class Grep:
                         print_line = True
         if print_line:
             data.match_found()
+        return print_line
 
     def _parse_file(self, file, data):
+        match_found = False
         try:
             data.set_file(file)
         except EnvironmentError as ex:
@@ -1112,17 +1114,21 @@ class Grep:
                 print('{}: {}'.format(THIS_FILE_NAME, str(ex)), file=sys.stderr)
         else:
             while data.next_line() and (self._max_count is None or data.num_matches < self._max_count):
-                self._parse_line(data)
+                if self._parse_line(data):
+                    match_found = True
+        return match_found
 
     def execute(self):
         '''
         Executes Grep with all the assigned attributes.
+        Returns: a list of files with matches
         '''
         if not self._patterns:
             print('No patterns provided', file=sys.stderr)
-            return 1
+            return None
 
         data = self._init_line_parsing_data()
+        matched_files = []
 
         for file in data.files:
             if os.path.isdir(file.name):
@@ -1132,11 +1138,13 @@ class Grep:
                     for root, _, recurse_files in os.walk(file.name):
                         for recurse_file in recurse_files:
                             file_path = os.path.join(root, recurse_file)
-                            self._parse_file(self._make_file_iterable(file_path), data)
+                            if self._parse_file(self._make_file_iterable(file_path), data):
+                                matched_files += [file_path]
             else:
-                self._parse_file(file, data)
+                if self._parse_file(file, data):
+                    matched_files += [file.name]
 
-        return 0
+        return matched_files
 
 class GrepArgParser:
     '''
@@ -1335,7 +1343,11 @@ def main(cliargs):
     if not grep_arg_parser.parse(cliargs, grep):
         return 1
     else:
-        return grep.execute()
+        matched_files = grep.execute()
+        if matched_files is not None:
+            return 0
+        else:
+            return 1
 
 if __name__ == "__main__":
     try:
