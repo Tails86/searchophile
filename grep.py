@@ -374,6 +374,72 @@ class AnsiString:
         '''
         self._color_settings = {}
 
+    class SettingsIterator:
+        def __init__(self, settings_dict):
+            self.settings_dict = settings_dict
+            self.current_settings = []
+            self.dict_iter = iter(sorted(self.settings_dict))
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            # Will raise StopIteration when complete
+            idx = next(self.dict_iter)
+            settings = self.settings_dict[idx]
+            # Remove settings that it is time to remove
+            for setting in settings[AnsiString.SETTINGS_REMOVE_IDX]:
+                # setting object will only be matched and removed if it is the same reference to one
+                # previously added - will raise exception otherwise which should not happen if the
+                # settings dictionary and this method were setup correctly.
+                self.current_settings.remove(setting)
+            # Apply settings that it is time to add
+            self.current_settings += settings[AnsiString.SETTINGS_APPLY_IDX]
+            return (idx, settings, self.current_settings)
+
+    def _slice_val_to_idx(self, val, default):
+        if val is None:
+            return default
+        elif val < 0:
+            return len(self._s) + val
+        else:
+            return val
+
+    def __getitem__(self, val):
+        ''' Returns a AnsiString object which represents a substring of self '''
+        if isinstance(val, int):
+            st = val
+            en = val + 1
+        elif isinstance(val, slice):
+            if val.step is not None and val.step != 1:
+                raise ValueError('Step other than 1 not supported')
+            st = self._slice_val_to_idx(val.start, 0)
+            en = self._slice_val_to_idx(val.stop, len(self._s))
+        else:
+            raise TypeError('Invalid type for __getitem__')
+
+        if st == 0 and en == len(self._s):
+            # No need to make substring
+            return self
+
+        new_s = AnsiString(self._s[val])
+        last_settings = []
+        settings_initialized = False
+        for idx, settings, current_settings in __class__.SettingsIterator(self._color_settings):
+            if idx >= len(self._s) or idx >= en:
+                # Complete
+                break
+            if idx == st:
+                new_s._color_settings[0] = [list(current_settings), []]
+                settings_initialized = True
+            elif idx > st:
+                if not settings_initialized:
+                    new_s._color_settings[0] = [last_settings, []]
+                    settings_initialized = True
+                new_s._color_settings[idx - st] = [list(settings[0]), list(settings[1])]
+            last_settings = list(current_settings)
+        return new_s
+
     def __str__(self):
         '''
         Returns an ANSI format string with only internal formatting set.
@@ -389,7 +455,6 @@ class AnsiString:
             return self._s
 
         out_str = ''
-        current_settings = []
         last_idx = 0
 
         settings_dict = self._color_settings
@@ -424,22 +489,13 @@ class AnsiString:
 
             __class__._insert_settings_to_dict(settings_dict, 0, True, format_settings)
 
-        for idx in sorted(settings_dict):
+        for idx, settings, current_settings in __class__.SettingsIterator(settings_dict):
             if idx >= len(self._s):
                 # Invalid
                 break
-            settings = settings_dict[idx]
             # Catch up output to current index
             out_str += self._s[last_idx:idx]
             last_idx = idx
-            # Remove settings that it is time to remove
-            for setting in settings[__class__.SETTINGS_REMOVE_IDX]:
-                # setting object will only be matched and removed if it is the same reference to one
-                # previously added - will raise exception otherwise which should not happen if the
-                # settings dictionary and this method were setup correctly.
-                current_settings.remove(setting)
-            # Apply settings that it is time to add
-            current_settings += settings[__class__.SETTINGS_APPLY_IDX]
 
             settings_to_apply = [str(s) for s in current_settings]
             if settings[__class__.SETTINGS_REMOVE_IDX] and settings_to_apply:
@@ -535,6 +591,8 @@ class Grep:
         self._color_output_mode = __class__.ColorOutputMode.AUTO
         self._directory_fn = __class__.Directory.READ
         self._label = '(standard input)'
+        self._quiet = False
+        self._only_matching = False
 
     def add_patterns(self, pattern_or_patterns):
         if isinstance(pattern_or_patterns, list):
@@ -657,6 +715,14 @@ class Grep:
         self._label = label
 
     @property
+    def quiet(self):
+        return self._quiet
+
+    @quiet.setter
+    def quiet(self, quiet):
+        self._quiet = quiet
+
+    @property
     def results_sep(self):
         return self._results_sep
 
@@ -714,6 +780,14 @@ class Grep:
             end = end.encode()
         self._end = end
 
+    @property
+    def only_matching(self):
+        return self._only_matching
+
+    @only_matching.setter
+    def only_matching(self, only_matching):
+        self._only_matching = only_matching
+
     @staticmethod
     def _generate_color_dict():
         grep_color_dict = dict(DEFAULT_GREP_ANSI_COLORS)
@@ -758,11 +832,13 @@ class Grep:
             self.line = b''
             self.line_len = 0
             self.formatted_line = None
+            self.line_slices = []
             self.line_num = 0
             self.overflow_detected = False
             self.binary_detected = False
             self.num_matches = 0
             self.byte_offset = 0
+            self.print_fn = None
 
         def set_color_mode(self, color_mode):
             self.color_enabled = False
@@ -808,7 +884,8 @@ class Grep:
                         status_msgs += ' and'
                     status_msgs += ' line overflow detected'
                 if status_msgs:
-                    print('{filename}: {status_msgs}'.format(status_msgs=status_msgs, **self.line_data_dict))
+                    self.print_fn('{filename}: {status_msgs}'
+                                  .format(status_msgs=status_msgs, **self.line_data_dict))
                 return False
 
             self.line_len = len(self.line)
@@ -831,7 +908,7 @@ class Grep:
                 str_line = self.line.decode()
             except UnicodeDecodeError:
                 # Can't decode line
-                # Note this is a bit more flexible as \x00 can be decoded by Python
+                # Note this is a bit more flexible as \x00 can be decoded by Python without error
                 self.binary_detected = True
                 self.formatted_line = AnsiString(self.line)
             else:
@@ -840,20 +917,31 @@ class Grep:
                     str_line = str_line.lower()
                 self.formatted_line = AnsiString(str_line)
 
+            self.line_slices = []
+
             return True
 
-        def match_found(self, file, flush):
+        def match_found(self):
             '''
             Called when match is found in order to increment match count and print the line.
             '''
             self.num_matches += 1
             if not self.binary_detected:
-                self.line_data_dict.update({
-                    'num': AnsiString(str(self.line_num)),
-                    'byte_offset': AnsiString(str(self.byte_offset)),
-                    'line': self.formatted_line
-                })
-                print(self.line_format.format(**self.line_data_dict), file=file, flush=flush)
+                if not self.line_slices:
+                    # Default to printing the entire line
+                    self.line_slices = [slice(0, None)]
+
+                for line_slice in self.line_slices:
+                    if line_slice.start is not None:
+                        slice_byte_offset = line_slice.start
+                    else:
+                        slice_byte_offset = 0
+                    self.line_data_dict.update({
+                        'num': AnsiString(str(self.line_num)),
+                        'byte_offset': AnsiString(str(self.byte_offset + slice_byte_offset)),
+                        'line': self.formatted_line[line_slice]
+                    })
+                    self.print_fn(self.line_format.format(**self.line_data_dict))
 
     def _make_file_iterable(self, path):
         return AutoInputFileIterable(path, 'rb', self.end)
@@ -954,6 +1042,12 @@ class Grep:
 
         data.line_format += '{line}'
 
+        if not self._quiet:
+            data.print_fn = lambda line : print(line, file=self._print_file, flush=self._line_buffered)
+        else:
+            # Do nothing on print
+            data.print_fn = lambda line: None
+
         return data
 
     def _parse_line(self, data:LineParsingData):
@@ -966,13 +1060,14 @@ class Grep:
                 loc = data.line.find(pattern)
                 if loc >= 0:
                     print_line = not self._invert_match
-                    if data.color_enabled and print_line:
+                    if print_line and (data.color_enabled or self.only_matching):
                         while loc >= 0:
-                            data.formatted_line.apply_formatting(data.matching_color, loc, len(pattern))
+                            if data.color_enabled:
+                                data.formatted_line.apply_formatting(
+                                    data.matching_color, loc, len(pattern))
+                            if self.only_matching:
+                                data.line_slices.append(slice(loc, loc + len(pattern)))
                             loc = data.line.find(pattern, loc + len(pattern))
-                    else:
-                        # No need to keep going through each pattern
-                        break
                 elif self._invert_match:
                     # Color setting is ignored in this case - just print it
                     print_line = True
@@ -988,6 +1083,8 @@ class Grep:
                         if data.color_enabled:
                             # This is going to just format the whole line
                             data.formatted_line.apply_formatting_for_match(data.matching_color, m)
+                        if self.only_matching:
+                            data.line_slices.append(slice(m.start(0), m.end(0)))
                     elif self._invert_match:
                         # Color setting is ignored in this case - just print it
                         print_line = True
@@ -998,17 +1095,13 @@ class Grep:
                         print_line = not self._invert_match
                         if data.color_enabled:
                             data.formatted_line.apply_formatting_for_match(data.matching_color, m)
-                        else:
-                            # No need to keep iterating
-                            break
+                        if self.only_matching:
+                            data.line_slices.append(slice(m.start(0), m.end(0)))
                     if self._invert_match and not line_matches:
                         # Color setting is ignored in this case - just print it
                         print_line = True
-                if print_line and (not data.color_enabled or self._invert_match):
-                    # No need to keep going through each pattern
-                    break
         if print_line:
-            data.match_found(self._print_file, self._line_buffered)
+            data.match_found()
 
     def _parse_file(self, file, data):
         try:
@@ -1051,35 +1144,38 @@ class GrepArgParser:
     '''
     def __init__(self):
         self._parser = argparse.ArgumentParser(description='Partially implements grep command entirely in Python.', add_help=False)
-        self._parser.add_argument('patterns_positional', type=str, nargs='?', default=None, metavar='PATTERNS',
-                            help='Pattern(s) to search for; can contain multiple patterns separated by newlines. '
+        self._parser.add_argument('patterns_positional', type=str, nargs='?', default=None, metavar='EXPRESSIONS',
+                            help='Expressions to search for, separated by newline character (\\n). '
                             'This is required if --regexp or --file are not specified.')
-        self._parser.add_argument('file', type=str, nargs='*', default=[],
-                            help='Files to search; will search from stdin if none specified')
+        self._parser.add_argument('file', type=str, nargs='*', default=[], metavar='FILE',
+                            help='Files or directories to search. Stdin will be searched if not specified. '
+                            'How directories are handled is controled by -d and -r options.')
 
-        pattern_group = self._parser.add_argument_group('Pattern selection and interpretation')
+        pattern_group = self._parser.add_argument_group('Expression Interpretation')
         pattern_type = pattern_group.add_mutually_exclusive_group()
         pattern_type.add_argument('-E', '--extended-regexp', action='store_true',
-                                help='PATTERNS are extended regular expressions')
+                                help='EXPRESSIONS are extended regular expressions')
         pattern_type.add_argument('-F', '--fixed-strings', action='store_true',
-                                help='PATTERNS are strings')
+                                help='EXPRESSIONS are strings')
         pattern_type.add_argument('-G', '--basic-regexp', action='store_true',
-                                help='PATTERNS are basic regular expressions')
-        pattern_group.add_argument('-e', '--regexp', dest='patterns_option', metavar='PATTERNS', type=str,
+                                help='EXPRESSIONS are basic regular expressions')
+        pattern_group.add_argument('-e', '--regexp', dest='patterns_option', metavar='EXPRESSIONS', type=str,
                                 default=None,
-                                help='use PATTERNS for matching')
+                                help='use EXPRESSIONS for matching')
         pattern_group.add_argument('-f', '--file', metavar='FILE', dest='patterns_file', type=str, default=None,
-                                help='take PATTERNS from FILE')
+                                help='take EXPRESSIONS from FILE')
         pattern_group.add_argument('-i', '--ignore-case', action='store_true',
-                                help='ignore case distinctions in patterns and data')
+                                help='ignore case in expressions')
         pattern_group.add_argument('--no-ignore-case', dest='ignore_case', action='store_false',
-                                help='do not ignore case distinctions (default)')
+                                help='do not ignore case (default)')
         pattern_group.add_argument('-w', '--word-regexp', action='store_true',
-                                help='match only whole words')
+                                help='match whole words only')
         pattern_group.add_argument('-x', '--line-regexp', action='store_true',
-                                help='match only whole lines')
+                                help='match whole lines only')
+        pattern_group.add_argument('--end', type=str, default='\n',
+                                   help='newline character lines will be parsed by (default: \\n)')
         pattern_group.add_argument('-z', '--null-data', action='store_true',
-                                   help='a data line ends in 0 byte, not newline')
+                                   help='same as --end=\\0')
 
         misc_group = self._parser.add_argument_group('Miscellaneous')
         misc_group.add_argument('-s', '--no-messages', action='store_true', help='suppress error messages')
@@ -1089,32 +1185,29 @@ class GrepArgParser:
 
         output_ctrl_grp = self._parser.add_argument_group('Output control')
         output_ctrl_grp.add_argument('-m', '--max-count', metavar='NUM', type=int, default=None,
-                                     help='stop after NUM selected lines')
+                                     help='stop after NUM lines')
         output_ctrl_grp.add_argument('-b', '--byte-offset', action='store_true',
-                                     help='print the byte offset with output lines')
-        output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with output lines')
-        output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on every line')
-        output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with output lines')
-        output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name prefix on output')
-        output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name prefix')
-        # output_ctrl_grp.add_argument('-o', '--only-matching', action='store_true', help='show only nonempty parts of lines that match')
-        # output_ctrl_grp.add_argument('-q', '--quiet', '--silent', action='store_true', help='suppress all normal output')
+                                     help='print line\'s byte offset with each line')
+        output_ctrl_grp.add_argument('-n', '--line-number', action='store_true', help='print line number with each line')
+        output_ctrl_grp.add_argument('--line-buffered', action='store_true', help='flush output on each line')
+        output_ctrl_grp.add_argument('-H', '--with-filename', action='store_true', help='print file name with each line')
+        output_ctrl_grp.add_argument('-h', '--no-filename', action='store_true', help='suppress the file name output')
+        output_ctrl_grp.add_argument('--label', type=str, metavar='LABEL', help='use LABEL as the standard input file name')
+        output_ctrl_grp.add_argument('-o', '--only-matching', action='store_true', help='show only nonempty parts of lines that match')
+        output_ctrl_grp.add_argument('-q', '--quiet', '--silent', action='store_true', help='suppress all normal output')
         # output_ctrl_grp.add_argument('--binary-files', type=str, metavar='TYPE', default='binary',
         #                              choices=['binary', 'text', 'without-match'],
-        #                              help='assume that binary files are TYPE;\n'
+        #                              help='sets how binary file is parsed;\n'
         #                              'TYPE is \'binary\', \'text\', or \'without-match\'')
-        # output_ctrl_grp.add_argument('-a', '--text', action='store_true', help='equivalent to --binary-files=text')
-        # output_ctrl_grp.add_argument('-I', action='store_true', help='equivalent to --binary-files=without-match')
+        # output_ctrl_grp.add_argument('-a', '--text', action='store_true', help='same as --binary-files=text')
+        # output_ctrl_grp.add_argument('-I', action='store_true', help='same as --binary-files=without-match')
         output_ctrl_grp.add_argument('-d', '--directories', type=str, metavar='ACTION', default='read',
                                      choices=['read', 'recurse', 'skip'],
-                                     help='how to handle directories;\n'
+                                     help='controls how directory input is handled in FILE;\n'
                                      'ACTION is \'read\', \'recurse\', or \'skip\'')
-        # output_ctrl_grp.add_argument('-D', '--devices=ACTION', type=str, metavar='ACTION', choices=['read', 'skip'],
-        #                              help='how to handle devices, FIFOs and sockets;'
-        #                              'ACTION is \'read\' or \'skip\'')
-        output_ctrl_grp.add_argument('-r', '--recursive', action='store_true', help='like --directories=recurse')
+        output_ctrl_grp.add_argument('-r', '--recursive', action='store_true', help='same as --directories=recurse')
         # output_ctrl_grp.add_argument('-R', '--dereference-recursive', action='store_true', help='likewise, but follow all symlinks')
-        # output_ctrl_grp.add_argument('--include', type=str, metavar='GLOB', help='search only files that match GLOB (a file pattern)')
+        # output_ctrl_grp.add_argument('--include', type=str, metavar='GLOB', help='limit files to those matching GLOB')
         # output_ctrl_grp.add_argument('--exclude', type=str, metavar='GLOB', help='skip files that match GLOB')
         # output_ctrl_grp.add_argument('--exclude-from', type=str, metavar='FILE', help='skip files that match any file pattern from FILE')
         # output_ctrl_grp.add_argument('--exclude-dir', type=str, metavar='GLOB', help='skip directories that match GLOB')
@@ -1130,13 +1223,13 @@ class GrepArgParser:
         output_ctrl_grp.add_argument('--name-byte-sep', type=str, metavar='SEP', default=':',
                                     help='String to place between file name and byte number when both are enabled')
 
-        context_ctrl_grp = self._parser.add_argument_group('Context control')
+        context_ctrl_grp = self._parser.add_argument_group('Context Control')
         # context_ctrl_grp.add_argument('-B, --before-context=NUM', action='store_true', help='print NUM lines of leading context')
         # context_ctrl_grp.add_argument('-A, --after-context=NUM', action='store_true', help='print NUM lines of trailing context')
         # context_ctrl_grp.add_argument('-C, --context=NUM', action='store_true', help='print NUM lines of output context')
         context_ctrl_grp.add_argument('--color', '--colour', type=str, metavar='WHEN', nargs='?', default='auto', dest='color',
                                     choices=['always', 'never', 'auto'],
-                                    help='use markers to highlight the matching strings;\n'
+                                    help='use ANSI escape codes to highlight the matching strings;\n'
                                     'WHEN is \'always\', \'never\', or \'auto\'')
         # context_ctrl_grp.add_argument('-U', '--binary', action='store_true', help='do not strip CR characters at EOL (MSDOS/Windows)')
 
@@ -1201,6 +1294,8 @@ class GrepArgParser:
         grep_object.output_byte_offset = args.byte_offset
         grep_object.line_buffered = args.line_buffered
         grep_object.label = args.label
+        grep_object.quiet = args.quiet
+        grep_object.only_matching = args.only_matching
 
         if args.recursive or args.directories == 'recurse':
             grep_object.directory_fn = Grep.Directory.RECURSE
@@ -1215,7 +1310,7 @@ class GrepArgParser:
         if args.null_data:
             grep_object.end = b'\x00'
         else:
-            grep_object.end = b'\n'
+            grep_object.end = bytes(args.end, "utf-8").decode("unicode_escape")
 
         grep_object.results_sep = args.result_sep
         grep_object.name_num_sep = args.name_num_sep
