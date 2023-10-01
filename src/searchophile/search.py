@@ -68,7 +68,7 @@ import greplica
 import sedeuce
 from typing import Any, Union, List, Tuple
 
-__version__ = '0.9.4'
+__version__ = '0.9.5'
 PACKAGE_NAME = 'searchophile'
 
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
