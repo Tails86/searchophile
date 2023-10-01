@@ -29,33 +29,18 @@ Examples:
 > search.py 'the quick brown fox'
 This will search all files under the pwd for the string "the quick brown fox" and display
 equivalent find/grep command with results to stdout.
-Output:
-find . -type f -exec grep --color=auto -HF 'the quick brown fox' {} ';'
-(grep search results shown here)
 
 > search.py 'hi mom' --name '*.py' -in
 This will search all python files under the pwd for the string "hi mom", ignoring case and display
 line number.
-Output:
-find . -type f -name '*.py' -exec grep --color=always -HinF 'hi mom' {} ';'
-(grep search results shown here)
 
 > search.py coordinates[2] --regexwholename '^.*\.(h|hpp|c|cpp)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
-Output:
-find . -type f -regex '^.*\.(h|hpp|c|cpp)$' -regextype sed -exec grep --color=always -HF 'coordinates[2]' {} ';'
-(grep search results shown here)
-Would you like to continue? (y/n): y
-find . -type f -regex '^.*\.(h|hpp|c|cpp)$' -regextype sed | xargs sed -i 's=coordinates\[2\]=coordinate_z=g'
-(sed result shown here)
 
-> search.py '^this.*is [a-z] regex string [0-9]+$' --regex-search --silent
+> search.py '^this.*is [a-z] regex string [0-9]+$' --regex-search
 This will search all files under the pwd for the regex string
-"^this.*is [a-z] regex string [0-9]+$" and print results to stdout without printing equivalent
-find/grep command.
-Output:
-(grep search results shown here)
+"^this.*is [a-z] regex string [0-9]+$" and print results to stdout.
 '''
 
 import os
@@ -73,9 +58,9 @@ PACKAGE_NAME = 'searchophile'
 
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
 THIS_SCRIPT_DIR = os.path.dirname(THIS_SCRIPT_PATH)
-FIND_CMD = 'refind'
-GREP_CMD = 'greplica'
-SED_CMD = 'sedeuce'
+FIND_CMD = 'find'
+GREP_CMD = 'grep'
+SED_CMD = 'sed'
 
 def _item_needs_quotes(item):
     '''
@@ -335,11 +320,12 @@ def main(cliargs):
     args = _parse_args(cliargs)
     find_command, find_obj = _build_find(args)
     grep_command, grep_obj = _build_grep(args)
-    # If not silent, print the approximate CLI equivalent of what is about to be done
-    if not args.silent:
+
+    if args.dry_run:
+        # Only print equivalent command on dry run
         cmd_to_print = find_command + ['-exec'] + grep_command + ['{}', '\';\'']
         _print_command(cmd_to_print)
-    if not args.dry_run:
+    else:
         # Execute find to get all files
         paths = find_obj.execute(return_list=True)
         file_list = [path.full_path for path in paths]
@@ -367,7 +353,7 @@ def main(cliargs):
                 else:
                     print('No matches found - skipping replace')
                 # Continue otherwise
-            if args.dry_run or file_list:
+            if args.dry_run:
                 _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(replace_command))
         if not args.dry_run and file_list:
             # Execute the sed command to do the replace
