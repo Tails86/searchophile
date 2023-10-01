@@ -365,9 +365,10 @@ def main(cliargs):
                         print('Invalid entry: {}'.format(input_str))
                         return 2
                 else:
-                    print('No matches found')
+                    print('No matches found - skipping replace')
                 # Continue otherwise
-            _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(replace_command))
+            if args.dry_run or file_list:
+                _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(replace_command))
         if not args.dry_run and file_list:
             # Execute the sed command to do the replace
             sed_obj.add_file(file_list)
