@@ -53,7 +53,7 @@ import greplica
 import sedeuce
 from typing import Any, Union, List, Tuple
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 PACKAGE_NAME = 'searchophile'
 
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
@@ -298,7 +298,7 @@ def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
     sed_script = 's={}={}=g{}'.format(search_string.replace('=', '\\='),
                                       replace_string.replace('=', '\\='),
                                       'i' if args.ignore_case else '')
-    sed_cmd = [SED_CMD, '-i', '--', sed_script]
+    sed_cmd = [SED_CMD, '-i', '-E', '--', sed_script]
 
     sed_obj = sedeuce.Sed()
     sed_obj.in_place = True
