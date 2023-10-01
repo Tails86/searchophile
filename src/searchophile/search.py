@@ -63,6 +63,10 @@ import sys
 import argparse
 import subprocess
 import string
+import refind
+import greplica
+import sedeuce
+from typing import Any, Union, List, Tuple
 
 __version__ = '0.9.3'
 PACKAGE_NAME = 'searchophile'
@@ -190,11 +194,11 @@ def _parse_args(cliargs):
 
     return args
 
-def _build_find_command(args, for_printout):
+def _build_find(args):
     '''
     Builds the find with the given arguments.
     Inputs: args - The parser argument structure.
-    Returns: The find command list.
+    Returns: The find command list and Finder object.
     '''
     find_dir = args.root_dir
     if find_dir is None:
@@ -223,7 +227,12 @@ def _build_find_command(args, for_printout):
         find_command += ['-maxdepth', str(args.max_depth)]
     if args.min_depth > 0:
         find_command += ['-mindepth', str(args.min_depth)]
-    return find_command
+
+    find_obj = refind.Finder()
+    find_parser = refind.FinderArgParser()
+    find_parser.parse(find_command[1:], find_obj)
+
+    return (find_command, find_obj)
 
 def _escape_chars(string, escape_chars_string, escape_char, escape_format=None):
     '''
@@ -242,12 +251,11 @@ def _escape_chars(string, escape_chars_string, escape_char, escape_format=None):
             string_copy = string_copy.replace(char, escape_format.format(char))
     return string_copy
 
-def _build_grep_command(args, for_printout):
+def _build_grep(args) -> Tuple[List[str], greplica.Grep]:
     '''
     Builds the grep command with the given arguments.
     Inputs: args - The parser argument structure.
-            for_printout - True iff this command is given as reference printout
-    Returns: The grep command list.
+    Returns: The grep command list and Grep object.
     '''
     # Build the grep command to search in the above files
     grep_command = [GREP_CMD]
@@ -255,16 +263,8 @@ def _build_grep_command(args, for_printout):
         grep_color_option = '--color=always'
     elif args.no_color:
         grep_color_option = '--color=never'
-    # Really, auto option is needed, but grep is piped internally, so grep will not provide color if
-    # auto is selected. Therefore, auto is used if this command is built for reference printout.
-    # Otherwise, color is determined based on if this command is outputting directly to the
-    # terminal.
-    elif for_printout:
-        grep_color_option = '--color=auto'
-    elif sys.stdout.isatty():
-        grep_color_option = '--color=always'
     else:
-        grep_color_option = '--color=never'
+        grep_color_option = '--color=auto'
     grep_other_options = '-H'
     if args.ignore_case:
         grep_other_options += 'i'
@@ -280,17 +280,27 @@ def _build_grep_command(args, for_printout):
         grep_other_options += 'E' # For grep "extended regex"
     else:
         grep_other_options += 'F' # Default to string search
-    if not args.no_grep_tweaks and not for_printout:
-        # greplica can handle colon separation tweak natively
-        grep_command += ['--result-sep= : ']
     grep_command += [grep_color_option, grep_other_options, search_string]
-    return grep_command
 
-def _build_replace_command(args):
+    if args.show_errors:
+        err_file = sys.stderr
+    else:
+        err_file = None
+    grep_obj = greplica.Grep(sys.stdout, err_file)
+    grep_parser = greplica.GrepArgParser()
+    greplica_args = grep_command[1:]
+    if not args.no_grep_tweaks:
+        # greplica can handle colon separation tweak natively
+        greplica_args += ['--result-sep= : ']
+    grep_parser.parse(greplica_args, grep_obj)
+
+    return (grep_command, grep_obj)
+
+def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
     '''
     Builds the sed find/replace command with the given arguments.
     Inputs: args - The parser argument structure.
-    Returns: The replace command list.
+    Returns: The replace command list and Sed object.
     '''
     search_string = args.search_string or args.search_string_opt
     replace_string = args.replace_string
@@ -301,49 +311,17 @@ def _build_replace_command(args):
     sed_script = 's={}={}=g{}'.format(search_string.replace('=', '\\='),
                                       replace_string.replace('=', '\\='),
                                       'i' if args.ignore_case else '')
-    return [SED_CMD, '-i', '--', sed_script]
+    sed_cmd = [SED_CMD, '-i', '--', sed_script]
 
-def _grep_output_tweaks(line, args, file_list):
-    '''
-    Adds a space after the colon before the result so that ctrl+click always works in vscode.
-    Inputs: line - The grep output line to apply tweaks to.
-            args - The parser argument structure.
-            file_list - List of files found by the find command.
-    Returns: The augmented grep line.
-    '''
-    line = line.decode()
-    colon_pos = None
-    start_pos = 0
-    if line.startswith('\x1b'):
-        # When color is enabled, the first \x1b[m marks the end of the file name - that's where we
-        # should start searching for colons
-        start_pos = line.find('\x1b[m')
-        if start_pos < 0:
-            # Failed to find the color marker
-            start_pos = 0
-        colon_pos = line.find(':', start_pos)
-    else:
-        colon_pos = line.find(':')
-        # Keep going until all characters up to the found colon is a valid file name.
-        # Not a perfect solution, but this is the best I can do to capture file names which have
-        # colons in the name.
-        while colon_pos >= 0 and line[:colon_pos] not in file_list:
-            colon_pos = line.find(':', colon_pos+1)
+    sed_obj = sedeuce.Sed()
+    sed_obj.in_place = True
+    sub_cmd = sedeuce.SubstituteCommand(None, search_string, replace_string)
+    sub_cmd.global_replace = True
+    if args.ignore_case:
+        sub_cmd.ignore_case = True
+    sed_obj.add_command(sub_cmd)
 
-    # If line number is shown, then we want the second colon
-    if args.show_line and colon_pos >= 0:
-        colon_pos = line.find(':', colon_pos+1)
-
-    # Finally, add the space were it's needed
-    if colon_pos >= 0:
-        line = line[:colon_pos] + ' : ' + line[colon_pos+1:]
-
-    return line.encode()
-
-def grep_print_thread_fn(proc, tweaker_fn):
-    for line in proc.stdout:
-        sys.stdout.buffer.write(tweaker_fn(line))
-
+    return (sed_cmd, sed_obj)
 
 def main(cliargs):
     '''
@@ -354,39 +332,25 @@ def main(cliargs):
              2 if invalid entry provided
     '''
     args = _parse_args(cliargs)
-    find_command = _build_find_command(args, False)
-    grep_command = _build_grep_command(args, False)
+    find_command, find_obj = _build_find(args)
+    grep_command, grep_obj = _build_grep(args)
     # If not silent, print the approximate CLI equivalent of what is about to be done
     if not args.silent:
-        cmd_to_print = (
-            _quotify_command(_build_find_command(args, True)) +
-            ['-exec'] +
-            _quotify_command(_build_grep_command(args, True)) +
-            ['{}', '\';\'']
-        )
+        cmd_to_print = find_command + ['-exec'] + grep_command + ['{}', '\';\'']
         _print_command(cmd_to_print)
     if not args.dry_run:
-        if args.show_errors:
-            stderr = None
-        else:
-            # Suppress errors
-            stderr = subprocess.PIPE
         # Execute find to get all files
-        find_process = subprocess.Popen(find_command, stdout=subprocess.PIPE, stderr=stderr)
-        find_output, _ = find_process.communicate()
-        file_list = [x for x in find_output.decode().split(os.linesep) if x != '']
+        paths = find_obj.execute(return_list=True)
+        file_list = [path.full_path for path in paths]
         if (not args.replace_string or not args.silent) and file_list:
             # Execute grep on those files and print result to stdout in realtime
-            grep_process = subprocess.Popen(
-                grep_command + ['--'] + file_list,
-                stdout=None,
-                stderr=stderr)
-
-            # Wait until complete
-            grep_process.wait()
+            grep_obj.add_files(file_list)
+            grep_result = grep_obj.execute(False)
+            # Can limit file list to just what matched in Grep
+            file_list = [file.filename for file in grep_result.files]
 
     if args.replace_string:
-        replace_command = _build_replace_command(args)
+        replace_command, sed_obj = _build_replace(args)
         # If not silent, check if user wants to continue then print the CLI equivalent of what is
         # about to be done
         if not args.silent:
@@ -405,8 +369,8 @@ def main(cliargs):
             _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(replace_command))
         if not args.dry_run and file_list:
             # Execute the sed command to do the replace
-            replace_process = subprocess.Popen(replace_command + file_list)
-            replace_process.communicate(input=find_output)
+            sed_obj.add_file(file_list)
+            sed_obj.execute()
     return 0
 
 if __name__ == "__main__":
