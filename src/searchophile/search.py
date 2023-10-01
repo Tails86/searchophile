@@ -64,7 +64,7 @@ import argparse
 import subprocess
 import string
 
-__version__ = '0.9.0'
+__version__ = '0.9.1'
 PACKAGE_NAME = 'searchophile'
 
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
@@ -129,11 +129,6 @@ def _parse_args(cliargs):
     Inputs: cliargs - The arguments provided to the command line.
     Returns: A structure which contains all of the parsed arguments.
     '''
-    extend_action = 'extend'
-    version_dec = sys.version_info.major + (sys.version_info.minor / 10.0)
-    if version_dec < 3.8:
-        # The extend action is not compatible here
-        extend_action = None
     parser = argparse.ArgumentParser(description='Recursively search for files within a directory')
     grep_group = parser.add_argument_group('grep Options')
     search_string_group = grep_group.add_mutually_exclusive_group()
@@ -161,16 +156,16 @@ def _parse_args(cliargs):
     find_group = parser.add_argument_group('find options')
     find_group.add_argument('--root', dest='root_dir', type=str, default=None,
                             help='Root directory in which to search (default: cwd)')
-    find_group.add_argument('-a', '--name', dest='names', type=str, action=extend_action, nargs='+',
+    find_group.add_argument('-a', '--name', dest='names', type=str, action='append',
                             default=[], help='File name globs used to narrow search')
     find_group.add_argument('-w', '--wholename', '--wholeName', '--path', dest='whole_names',
-                            type=str, action=extend_action, nargs='+', default=[],
+                            type=str, action='append', default=[],
                             help='Relative file path globs used to narrow search')
     find_group.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
-                            action=extend_action, nargs='+', default=[],
+                            action='append', default=[],
                             help='File name regex globs used to narrow search')
     find_group.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
-                            type=str, action=extend_action, nargs='+', default=[],
+                            type=str, action='append', default=[],
                             help='Relative file path regex globs used to narrow search')
     find_group.add_argument('-M', '--maxdepth', '--maxDepth', dest='max_depth', type=int,
                             default=None, help='Maximum find directory depth (default: inf)')

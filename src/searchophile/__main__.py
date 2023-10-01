@@ -23,8 +23,11 @@
 import sys
 from .search import main as search_main
 
-def main(cliargs=sys.argv[1:]) -> int:
+def main(cliargs=None) -> int:
     ''' Search main using arguments from sys.argv '''
+    if cliargs is None:
+        cliargs = sys.argv[1:]
+
     try:
         return search_main(cliargs)
     except KeyboardInterrupt:
@@ -40,5 +43,6 @@ def pysearch_main() -> int:
     ''' Search main specifically for C-file extensions '''
     return main(['-n', '--name', '*.py'] + sys.argv[1:])
 
-# Execute above
-sys.exit(main())
+if __name__ == '__main__':
+    # Execute above
+    sys.exit(main())
