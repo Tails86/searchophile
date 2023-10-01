@@ -20,7 +20,7 @@ jobs:
         USER: ${{secrets.PYPI_USER}}
         PSWD: ${{secrets.PYPI_PASSWORD}}
       run: |
-        python setup.py sdist wheel
+        python setup.py sdist bdist_wheel
         twine upload --repository pypi -u "$USER" -p "$PSWD" dist/*
     - name: Archive production artifacts
       uses: actions/upload-artifact@v3

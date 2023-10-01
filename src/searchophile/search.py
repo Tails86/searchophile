@@ -172,6 +172,8 @@ def _parse_args(cliargs):
                              'unless there was an error.')
     other_group.add_argument('--show-errors', dest='show_errors', action='store_true',
                              default=False, help='Show all errors to stderr instead of suppressing')
+    other_group.add_argument('--version', action='store_true',
+                            help='output version information and exit')
     silent_group.add_argument('--dry-run', '--dryrun', dest='dry_run', action='store_true',
                         help='Print equivalent find/grep/sed commands and exit.')
 
@@ -318,6 +320,9 @@ def main(cliargs):
              2 if invalid entry provided
     '''
     args = _parse_args(cliargs)
+    if args.version:
+        print('{} {}'.format(PACKAGE_NAME, __version__))
+        sys.exit(0)
     find_command, find_obj = _build_find(args)
     grep_command, grep_obj = _build_grep(args)
 
