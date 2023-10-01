@@ -64,7 +64,7 @@ import argparse
 import subprocess
 import string
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 PACKAGE_NAME = 'searchophile'
 
 THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
