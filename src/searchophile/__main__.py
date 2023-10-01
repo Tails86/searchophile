@@ -37,7 +37,7 @@ def main(cliargs=None) -> int:
 
 def csearch_main() -> int:
     ''' Search main specifically for C-file extensions '''
-    return main(['-n', '--regexwholename', '^.*\.\(h\|hpp\|c\|cpp\|cxx\|cc\)$'] + sys.argv[1:])
+    return main(['-n', '--regexpath', '^.*\.(h|hpp|c|cpp|cxx|cc)$'] + sys.argv[1:])
 
 def pysearch_main() -> int:
     ''' Search main specifically for C-file extensions '''

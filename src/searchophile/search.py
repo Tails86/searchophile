@@ -61,7 +61,7 @@ Output:
 import os
 import sys
 import argparse
-import subprocess
+import re
 import string
 import refind
 import greplica
@@ -168,8 +168,8 @@ def _parse_args(cliargs):
     find_group.add_argument('-x', '--regexname', '--regexName', dest='regex_names', type=str,
                             action='append', default=[],
                             help='File name regex globs used to narrow search')
-    find_group.add_argument('-e', '--regexwholename', '--regexWholeName', dest='regex_whole_names',
-                            type=str, action='append', default=[],
+    find_group.add_argument('-e', '--regexwholename', '--regexWholeName', '--regexpath', '--regexPath',
+                            dest='regex_whole_names', type=str, action='append', default=[],
                             help='Relative file path regex globs used to narrow search')
     find_group.add_argument('-M', '--maxdepth', '--maxDepth', dest='max_depth', type=int,
                             default=None, help='Maximum find directory depth (default: inf)')
@@ -219,9 +219,9 @@ def _build_find(args):
             if name_options:
                 name_options.append('-o')
             name_options += [name_arg, name]
-    # If any regex name is set, set regextype to sed
+    # If any regex name is set, set regextype to egrep
     if all_regex_names:
-        find_command += ['-regextype', 'sed']
+        find_command += ['-regextype', 'egrep']
     find_command += name_options
     if args.max_depth is not None:
         find_command += ['-maxdepth', str(args.max_depth)]
@@ -306,8 +306,8 @@ def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
     replace_string = args.replace_string
     if not args.regex:
         # Escape all special characters
-        search_string = _escape_chars(search_string, '\\^$.*?[]', '\\')
-        replace_string = _escape_chars(replace_string, '\\[]&', '\\')
+        search_string = re.escape(search_string)
+        replace_string = replace_string.replace('\\', r'\\')
     sed_script = 's={}={}=g{}'.format(search_string.replace('=', '\\='),
                                       replace_string.replace('=', '\\='),
                                       'i' if args.ignore_case else '')
@@ -315,6 +315,7 @@ def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
 
     sed_obj = sedeuce.Sed()
     sed_obj.in_place = True
+    sed_obj.extended_regex = True # This will have Sed use re without augmentation
     sub_cmd = sedeuce.SubstituteCommand(None, search_string, replace_string)
     sub_cmd.global_replace = True
     if args.ignore_case:
