@@ -57,7 +57,11 @@ setuptools.setup(
         'Operating System :: OS Independent',
     ],
     python_requires='>=3.5',
-    install_requires=['greplica>=1.2.6', 'sedeuce>=1.0.7', 'refind>=1.0.6'],
+    install_requires=[
+        'greplica>=1.2.6,<2.0',
+        'sedeuce>=1.0.7,<2.0',
+        'refind>=1.0.6,<2.0'
+    ],
     extras_require={
         'dev': ['check-manifest']
     },

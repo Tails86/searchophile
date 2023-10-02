@@ -6,6 +6,17 @@ platform-independent by using the Python tools
 [greplica](https://pypi.org/project/greplica/), and
 [sedeuce](https://pypi.org/project/sedeuce/).
 
+## Contribution
+
+Feel free to open a bug report or make a merge request on [github](https://github.com/Tails86/searchophile/issues).
+
+## Installation
+This project is uploaded to PyPI at https://pypi.org/project/searchophile/
+
+To install, ensure you are connected to the internet and execute: `python3 -m pip install searchophile --upgrade`
+
+Ensure Python's scripts directory is under the environment variable `PATH` in order to be able to execute the CLI tools properly from command line.
+
 ## CLI Tools
 
 The following CLI commands are installed with this package. Execute --help on any of these commands
