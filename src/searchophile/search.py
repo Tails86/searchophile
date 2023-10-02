@@ -56,8 +56,6 @@ from typing import Any, Union, List, Tuple
 __version__ = '1.0.3'
 PACKAGE_NAME = 'searchophile'
 
-THIS_SCRIPT_PATH = os.path.abspath(os.path.realpath(__file__))
-THIS_SCRIPT_DIR = os.path.dirname(THIS_SCRIPT_PATH)
 FIND_CMD = 'find'
 GREP_CMD = 'grep'
 SED_CMD = 'sed'
@@ -67,17 +65,6 @@ def _item_needs_quotes(item):
     Returns true iff the given item needs to be surrounded in quotes.
     '''
     return any([c in item for c in string.whitespace + '~`#$&*()|[]{};<>?!\\"']) or len(item) <= 0
-
-def _which(cmd):
-    paths = os.environ.get('PATH', '') + os.path.pathsep + os.environ.get('path', '')
-    paths = paths.split(os.path.pathsep)
-    dirs = [d for d in paths if os.path.isdir(d)]
-    for dir_path in dirs:
-        for item in [f for f in os.listdir(dir_path) if f == cmd]:
-            item_path = os.path.join(dir_path, item)
-            if os.path.isfile(item_path):
-                return item_path
-    return None
 
 def _quotify_item(item):
     '''
