@@ -53,7 +53,7 @@ import greplica
 import sedeuce
 from typing import Any, Union, List, Tuple
 
-__version__ = '1.0.4'
+__version__ = '1.0.5'
 PACKAGE_NAME = 'searchophile'
 
 FIND_CMD = 'find'
@@ -282,6 +282,8 @@ def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
         # Escape all special characters
         search_string = re.escape(search_string)
         replace_string = replace_string.replace('\\', r'\\')
+    if args.whole_word:
+        search_string = r"\b" + search_string + r"\b"
     sed_script = 's={}={}=g{}'.format(search_string.replace('=', '\\='),
                                       replace_string.replace('=', '\\='),
                                       'i' if args.ignore_case else '')
