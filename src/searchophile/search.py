@@ -23,7 +23,6 @@
 '''
 This executable module is a wrapper for find, grep, and sed. It facilitates search and replace
 across files on the file system with a limited list of options.
-Compatibility: Linux
 
 Examples:
 > search.py 'the quick brown fox'
@@ -53,7 +52,7 @@ import greplica
 import sedeuce
 from typing import Any, Union, List, Tuple
 
-__version__ = '1.0.5'
+__version__ = '1.0.6'
 PACKAGE_NAME = 'searchophile'
 
 FIND_CMD = 'find'
@@ -270,6 +269,13 @@ def _build_grep(args) -> Tuple[List[str], greplica.Grep]:
 
     return (grep_command, grep_obj)
 
+def _count_end_chars(string, chars):
+    begin_idx = len(string) - 1
+    idx = begin_idx
+    while idx >= 0 and string[idx] in chars:
+        idx -= 1
+    return begin_idx - idx
+
 def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
     '''
     Builds the sed find/replace command with the given arguments.
@@ -278,25 +284,30 @@ def _build_replace(args) -> Tuple[List[str], sedeuce.Sed]:
     '''
     search_string = args.search_string or args.search_string_opt
     replace_string = args.replace_string
+
     if not args.regex:
         # Escape all special characters
         search_string = re.escape(search_string)
         replace_string = replace_string.replace('\\', r'\\')
+
     if args.whole_word:
         search_string = r"\b" + search_string + r"\b"
+
     sed_script = 's={}={}=g{}'.format(search_string.replace('=', '\\='),
                                       replace_string.replace('=', '\\='),
                                       'i' if args.ignore_case else '')
     sed_cmd = [SED_CMD, '-i', '-E', '--', sed_script]
 
+    # Ensure search and replace strings don't end in escape character so at least this will be
+    # parsed correctly. All other issues will be caught by parser below.
+    if _count_end_chars(search_string, '\\') % 2 != 0:
+        raise ValueError(f'escape detected at end of search string "{search_string}"')
+    if _count_end_chars(replace_string, '\\') % 2 != 0:
+        raise ValueError(f'escape detected at end of replace string "{replace_string}"')
+
     sed_obj = sedeuce.Sed()
-    sed_obj.in_place = True
-    sed_obj.extended_regex = True # This will have Sed use re without augmentation
-    sub_cmd = sedeuce.SubstituteCommand(None, search_string, replace_string)
-    sub_cmd.global_replace = True
-    if args.ignore_case:
-        sub_cmd.ignore_case = True
-    sed_obj.add_command(sub_cmd)
+    sed_parser = sedeuce.SedArgParser(sed_cmd[1:])
+    sed_parser.parse(sed_obj)
 
     return (sed_cmd, sed_obj)
 
@@ -314,11 +325,17 @@ def main(cliargs):
         sys.exit(0)
     find_command, find_obj = _build_find(args)
     grep_command, grep_obj = _build_grep(args)
+    if args.replace_string:
+        replace_command, sed_obj = _build_replace(args)
 
     if args.dry_run:
         # Only print equivalent command on dry run
-        cmd_to_print = find_command + ['-exec'] + grep_command + ['{}', '\';\'']
-        _print_command(cmd_to_print)
+        _print_command(
+            _quotify_command(find_command) +
+            ['-exec'] +
+            _quotify_command(grep_command) +
+            ['{}', '\';\'']
+        )
     else:
         # Execute find to get all files
         paths = find_obj.execute(return_list=True)
@@ -331,7 +348,6 @@ def main(cliargs):
             file_list = [file.filename for file in grep_result.files]
 
     if args.replace_string:
-        replace_command, sed_obj = _build_replace(args)
         # If not silent, check if user wants to continue then print the CLI equivalent of what is
         # about to be done
         if not args.silent:
@@ -347,8 +363,17 @@ def main(cliargs):
                 else:
                     print('No matches found - skipping replace')
                 # Continue otherwise
+
             if args.dry_run:
-                _print_command(_quotify_command(find_command) + ['|', 'xargs'] + _quotify_command(replace_command))
+                # This won't be exactly what will run since file_list will be limited to what grep
+                # found, but it's close enough.
+                _print_command(
+                    _quotify_command(find_command) +
+                    ['-exec'] +
+                    _quotify_command(replace_command) +
+                    ['{}', '\';\'']
+                )
+
         if not args.dry_run and file_list:
             # Execute the sed command to do the replace
             sed_obj.add_file(file_list)
