@@ -52,7 +52,7 @@ import greplica
 import sedeuce
 from typing import Any, Union, List, Tuple
 
-__version__ = '1.0.6'
+__version__ = '1.0.7'
 PACKAGE_NAME = 'searchophile'
 
 FIND_CMD = 'find'
