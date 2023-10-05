@@ -25,19 +25,19 @@ This executable module is a wrapper for find, grep, and sed. It facilitates sear
 across files on the file system with a limited list of options.
 
 Examples:
-> search.py 'the quick brown fox'
+> search 'the quick brown fox'
 This will search all files under the pwd for the string "the quick brown fox" and display
 equivalent find/grep command with results to stdout.
 
-> search.py 'hi mom' --name '*.py' -in
+> search 'hi mom' --name '*.py' -in
 This will search all python files under the pwd for the string "hi mom", ignoring case and display
 line number.
 
-> search.py coordinates[2] --regexwholename '^.*\.(h|hpp|c|cpp)$' --replace coordinate_z
+> search coordinates[2] --regexpath '^.*\.(h|hpp|c|cpp)$' --replace coordinate_z
 This will find all references to "coordinates[2]" in any file with the extension h, hpp, c, or cpp
 and replace with "coordinate_z", prompting user for confirmation before proceeding.
 
-> search.py '^this.*is [a-z] regex string [0-9]+$' --regex-search
+> search '^this.*is [a-z] regex string [0-9]+$' --regex-search
 This will search all files under the pwd for the regex string
 "^this.*is [a-z] regex string [0-9]+$" and print results to stdout.
 '''
@@ -104,7 +104,10 @@ def _parse_args(cliargs):
     Inputs: cliargs - The arguments provided to the command line.
     Returns: A structure which contains all of the parsed arguments.
     '''
-    parser = argparse.ArgumentParser(description='Recursively search for files within a directory')
+    parser = argparse.ArgumentParser(
+        prog='search',
+        description='Recursively search for files within a directory',
+        epilog='All regular expressions must be in "extended" form.')
     grep_group = parser.add_argument_group('grep Options')
     search_string_group = grep_group.add_mutually_exclusive_group()
     search_string_group.add_argument('search_string', default=None, nargs='?', type=str,
@@ -119,7 +122,7 @@ def _parse_args(cliargs):
                             help='List matching file names only for search operation')
     grep_group.add_argument('-n', '--show-line-number', dest='show_line', action='store_true',
                             help='Show line number in result')
-    grep_group.add_argument('--while-word', '--wholeword', dest='whole_word', action='store_true',
+    grep_group.add_argument('--whole-word', '--wholeword', dest='whole_word', action='store_true',
                             help='Search with whole word only')
     grep_group.add_argument('--no-grep-tweaks', dest='no_grep_tweaks', action='store_true',
                             help='Don\'t make any tweaks to the output of grep')
@@ -131,16 +134,18 @@ def _parse_args(cliargs):
     find_group = parser.add_argument_group('find options')
     find_group.add_argument('--root', dest='root_dir', type=str, default=None,
                             help='Root directory in which to search (default: cwd)')
-    find_group.add_argument('-a', '--name', dest='names', type=str, action='append',
+    find_group.add_argument('-a', '--name', dest='names', type=str, action='append', metavar='NAME',
                             default=[], help='File name globs used to narrow search')
     find_group.add_argument('-w', '--wholename', '--whole-name', '--path', dest='whole_names',
-                            type=str, action='append', default=[],
+                            metavar='PATH', type=str, action='append', default=[],
                             help='Relative file path globs used to narrow search')
     find_group.add_argument('-x', '--regexname', '--regex-name', dest='regex_names', type=str,
-                            action='append', default=[],
+                            action='append', default=[], metavar='REGEX_NAME',
                             help='File name regex globs used to narrow search')
-    find_group.add_argument('-e', '--regexwholename', '--regex-whole-name', '--regexpath', '--regex-path',
+    find_group.add_argument('-e', '--regexwholename', '--regex-whole-name', '--regexpath',
+                            '--regex-path',
                             dest='regex_whole_names', type=str, action='append', default=[],
+                            metavar='REGEX_PATH',
                             help='Relative file path regex globs used to narrow search')
     find_group.add_argument('-M', '--maxdepth', '--max-depth', dest='max_depth', type=int,
                             default=None, help='Maximum find directory depth (default: inf)')
@@ -149,8 +154,8 @@ def _parse_args(cliargs):
     sed_group = parser.add_argument_group('sed options')
     sed_group.add_argument('--replace', dest='replace_string', type=str,
                            help='String to replace search string. If --regex is selected, this '
-                                'must be as a sed replace string.')
-    other_group = parser.add_argument_group()
+                                'must be compatible with sed substitute replace string.')
+    other_group = parser.add_argument_group('other options')
     silent_group = other_group.add_mutually_exclusive_group()
     silent_group.add_argument('-t', '--silent', dest='silent', action='store_true',
                         help='Silence information & confirmations generated by this script. If '
@@ -351,7 +356,14 @@ def main(cliargs):
         # If not silent, check if user wants to continue then print the CLI equivalent of what is
         # about to be done
         if not args.silent:
-            if not args.dry_run:
+            if args.dry_run:
+                _print_command(
+                    _quotify_command(find_command) +
+                    ['-exec'] +
+                    _quotify_command(replace_command) +
+                    ['{}', '\';\'']
+                )
+            else:
                 if file_list:
                     input_str = input('Would you like to continue? (y/n): ')
                     if input_str.lower() == 'n' or input_str.lower() == 'no':
@@ -362,17 +374,6 @@ def main(cliargs):
                         return 2
                 else:
                     print('No matches found - skipping replace')
-                # Continue otherwise
-
-            if args.dry_run:
-                # This won't be exactly what will run since file_list will be limited to what grep
-                # found, but it's close enough.
-                _print_command(
-                    _quotify_command(find_command) +
-                    ['-exec'] +
-                    _quotify_command(replace_command) +
-                    ['{}', '\';\'']
-                )
 
         if not args.dry_run and file_list:
             # Execute the sed command to do the replace
