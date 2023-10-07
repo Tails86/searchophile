@@ -58,8 +58,8 @@ setuptools.setup(
     ],
     python_requires='>=3.5',
     install_requires=[
-        'greplica>=1.2.6,<2.0',
-        'sedeuce>=1.0.7,<2.0',
+        'greplica>=1.2.7,<2.0',
+        'sedeuce>=1.0.8,<2.0',
         'refind>=1.0.6,<2.0'
     ],
     extras_require={
